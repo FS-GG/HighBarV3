@@ -123,7 +123,7 @@ class Relay:
 def _validate_finite_fields(message, path):
     for field, value in message.ListFields():
         field_path = f"{path}.{field.name}" if path else field.name
-        if field.label == FieldDescriptor.LABEL_REPEATED:
+        if field.is_repeated:
             if field.type == FieldDescriptor.TYPE_MESSAGE:
                 for idx, item in enumerate(value):
                     err = _validate_finite_fields(item, f"{field_path}[{idx}]")

@@ -56,6 +56,11 @@
 
 #include <fstream>
 
+// Protobuf's Abseil headers define LOG after CircuitAI.h. Restore the
+// CircuitAI member logger for this translation unit once all headers load.
+#undef LOG
+#define LOG(fmt, ...) GetLog()->DoLog(utils::string_format(std::string(fmt), ##__VA_ARGS__).c_str())
+
 namespace circuit {
 
 using namespace springai;
