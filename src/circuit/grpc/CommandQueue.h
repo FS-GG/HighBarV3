@@ -28,6 +28,7 @@ class Counters;
 // Push returns.
 struct QueuedCommand {
 	std::string session_id;
+	std::string channel_incarnation;
 	std::uint64_t batch_seq = 0;
 	std::uint64_t client_command_id = 0;
 	std::uint32_t command_index = 0;
@@ -104,6 +105,7 @@ private:
 CommandBatchResult AdmitCommandBatch(
 	CommandQueue& queue,
 	const ::highbar::v1::CommandBatch& batch,
-	const std::string& session_id);
+	const std::string& session_id,
+	const std::string& channel_incarnation = {});
 
 }  // namespace circuit::grpc

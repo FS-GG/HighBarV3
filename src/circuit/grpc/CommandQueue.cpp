@@ -77,7 +77,8 @@ std::size_t CommandQueue::AvailableCapacity() const {
 CommandBatchResult AdmitCommandBatch(
 		CommandQueue& queue,
 		const ::highbar::v1::CommandBatch& batch,
-		const std::string& session_id) {
+		const std::string& session_id,
+		const std::string& channel_incarnation) {
 	constexpr int kMaxCoordinatorBatchCommands = 64;
 	const int command_count = batch.commands_size();
 	if (command_count == 0) {
@@ -102,6 +103,7 @@ CommandBatchResult AdmitCommandBatch(
 	for (int i = 0; i < command_count; ++i) {
 		QueuedCommand child;
 		child.session_id = session_id;
+		child.channel_incarnation = channel_incarnation;
 		child.batch_seq = batch.batch_seq();
 		child.client_command_id = batch.client_command_id();
 		child.command_index = static_cast<std::uint32_t>(i);

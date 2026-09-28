@@ -1,6 +1,7 @@
 # BARC-01.2 client-mode result transport decision
 
-Status: scoped, not implemented. The native asset smoke proof remains in
+Status: BARC-01.2a implemented and locally qualified; native runtime
+qualification remains pending. The native asset smoke proof remains in
 `barc-01-native-asset-proof.md`. The client-mode result path is a separate
 cross-repository contract change, so it is not an independent narrow source
 patch for this staging PR.
@@ -48,6 +49,32 @@ multiple plugin sessions are routed. Today's Python relay has one shared
 command queue and only an active-channel count, which does not identify the
 plugin that took a given batch. Adding an RPC without those rules could
 attribute a result to the wrong submitter or falsely report accepted work.
+
+## Frozen BARC-01.2a producer contract
+
+The additive producer contract is `ReportCommandBatchResult`, a bounded unary
+RPC made by the plugin command-reader thread after atomic native admission.
+`CommandChannelSubscribe` explicitly negotiates
+`ADMISSION_RESULT_PROTOCOL_CORRELATED_V1` and carries a fresh
+`channel_incarnation`. The report repeats the owning plugin, incarnation,
+strict base schema version, full `uint64` batch/correlation identity, and the
+existing `CommandBatchResult`. A report acknowledgement distinguishes
+recorded, duplicate, and late results.
+
+The example coordinator permits one owning plugin channel, registers pending
+work before forwarding, rejects colliding identities, and keys each waiter by
+incarnation, batch sequence, and correlation. Wrong-owner and old-incarnation
+reports fail; duplicate reports are idempotent; late reports cannot satisfy a
+new waiter. Timeout, cancellation, EOF, and reconnect after forwarding produce
+an unknown terminal RPC outcome and never retry the command. Explicit
+`legacy-observation-only` mode forwards for compatibility while returning no
+native results or accepted counters.
+
+Queue entries and `CommandDispatchEvent` now retain the channel incarnation.
+Admission remains separate from later engine dispatch and observed state
+change. The exact frozen source hashes are recorded in the delivery commit and
+qualification report; downstream receivers must pin that commit rather than a
+mutable branch.
 
 ## Compatibility and verification gates
 
