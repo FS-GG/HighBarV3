@@ -1,7 +1,8 @@
 # BARC-01 native asset and smoke proof (partial)
 
 This records a reproducible local asset set and the limit of native evidence as
-of 2026-09-28. It does not qualify BARC-01.2 command/result correlation.
+of 2026-09-28. It proves one live MoveUnit engine effect but does not qualify
+the full BARC-01.2 command/result contract.
 
 ## Exact assets
 
@@ -41,16 +42,28 @@ ID 1 and NullAI to ID 0, so runs set
 
 With that setting, `tests/headless/us1-observer.sh` passed: 30 state updates,
 last sequence 30, in 9 seconds. The coordinator logged a plugin PushState
-stream and OpenCommandChannel subscription. `tests/headless/behavioral-move.sh`
-then observed a live commander snapshot, but its `SubmitCommands` RPC failed
-before admission because the local protobuf runtime's `FieldDescriptor` no
-longer exposes `.label` in the Python example coordinator. The example now
-uses `.is_repeated`; a direct valid/NaN batch validation probe passed after
-the fix. The live move script has **not** been rerun after that source fix.
-There is no observed command execution, correlated result, or BARC-01.2
-completion proof from these runs.
+stream and OpenCommandChannel subscription. The first
+`tests/headless/behavioral-move.sh` attempt stopped at `SubmitCommands`
+because the local protobuf runtime's `FieldDescriptor` no longer exposes
+`.label` in the Python example coordinator. The example now uses
+`.is_repeated`; a direct valid/NaN batch validation probe passed. A second
+attempt reached the plugin but its native admission rejected the fixture's
+zero client correlation ID. The fixture now sets `client_command_id=1`.
 
-Local raw logs are under `/tmp/barc-native-assets/us1-run2/` and
-`/tmp/barc-native-assets/move-run/`; these are ephemeral evidence paths, not
+The final bounded move attempt passed. The coordinator logged forwarding
+batch sequence 1 with one `move_unit`; the plugin trace logged
+`cmd batch admission seq=1 correlation=1 ncmds=1 status=accepted`; and the
+engine state snapshots showed commander 25947 moving from `(500.0, 349.8,
+397.0)` to `(990.4, 352.0, 397.3)`, a displacement of 490.4 elmos. This
+is an observed engine effect tied to the submitted batch. The Python
+coordinator still returns only an accepted-batch count from `SubmitCommands`;
+no structured `CommandBatchResult` was observed, so end-to-end typed result
+correlation and the full BARC-01.2 milestone remain unproven.
+
+Local raw logs are under `/tmp/barc-native-assets/us1-run2/`,
+`/tmp/barc-native-assets/move-run2/`, and
+`/tmp/barc-native-assets/move-run3/`; the accepted batch and engine effect
+are in `/tmp/barc-native-assets/coordinator-move-trace3.log` and
+`move-run3/behavioral-move.log`. These are ephemeral evidence paths, not
 repository fixtures. The BAR test game also emitted Lua feature definition
 and headless rendering errors while the engine continued to advance frames.

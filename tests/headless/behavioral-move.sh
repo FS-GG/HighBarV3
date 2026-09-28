@@ -195,6 +195,7 @@ print(f"[bmove] commander_id={cmdr_id} before=({px:.1f}, {py:.1f}, {pz:.1f})",
 def gen():
     batch = commands_pb2.CommandBatch()
     batch.batch_seq = 1
+    batch.client_command_id = 1
     batch.target_unit_id = cmdr_id
     cmd = batch.commands.add()
     cmd.move_unit.unit_id = cmdr_id
