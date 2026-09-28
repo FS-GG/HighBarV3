@@ -172,7 +172,7 @@ mkdir -p "$RUNTIME_DIR"
 if [[ -z "$LOG" ]];      then LOG="$RUNTIME_DIR/highbar-launch.log"; fi
 if [[ -z "$PID_FILE" ]]; then PID_FILE="$RUNTIME_DIR/highbar-launch.pid"; fi
 
-export SPRING_DATADIR="$WRITEDIR"
+export SPRING_DATADIR="${HIGHBAR_DATA_DIRS:-$WRITEDIR}"
 export XDG_RUNTIME_DIR="$RUNTIME_DIR"
 if [[ "$VIEWER_ONLY" != "true" ]]; then
     [[ -n "$COORDINATOR" ]] && export HIGHBAR_COORDINATOR="$COORDINATOR"

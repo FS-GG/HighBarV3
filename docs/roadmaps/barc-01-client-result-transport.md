@@ -1,7 +1,7 @@
 # BARC-01.2 client-mode result transport decision
 
-Status: BARC-01.2a implemented and locally qualified; native runtime
-qualification remains pending. The native asset smoke proof remains in
+Status: BARC-01.2a-b implemented and qualified in a real native runtime;
+the FSBar receiver join remains pending. The native asset proof is in
 `barc-01-native-asset-proof.md`. The client-mode result path is a separate
 cross-repository contract change, so it is not an independent narrow source
 patch for this staging PR.
