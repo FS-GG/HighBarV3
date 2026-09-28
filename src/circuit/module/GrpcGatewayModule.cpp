@@ -1325,6 +1325,7 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 		dispatch_event->set_target_unit_id(
 			static_cast<std::uint32_t>(entry.authoritative_target_unit_id));
 		dispatch_event->set_frame(CurrentFrame());
+		dispatch_event->set_channel_incarnation(entry.channel_incarnation);
 		const auto target_id = grpc::EffectiveDispatchTargetUnitId(
 			entry.authoritative_target_unit_id, cmd);
 		if (!target_id.has_value()) {

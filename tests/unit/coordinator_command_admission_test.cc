@@ -44,7 +44,8 @@ TEST(CoordinatorCommandAdmission, PreservesThreeChildProvenance) {
 	CommandQueue queue(nullptr, 8);
 	const auto batch = MakeBatch(77, 88, 42, {101, 102, 103});
 
-	const auto result = AdmitCommandBatch(queue, batch, "plugin-7-cmd-ch");
+	const auto result = AdmitCommandBatch(
+		queue, batch, "plugin-7-cmd-ch", "incarnation-17");
 
 	ASSERT_TRUE(result.accepted());
 	EXPECT_EQ(result.accepted_command_count, 3u);
@@ -52,6 +53,7 @@ TEST(CoordinatorCommandAdmission, PreservesThreeChildProvenance) {
 	ASSERT_EQ(queue.Drain(&drained), 3u);
 	for (std::size_t i = 0; i < drained.size(); ++i) {
 		EXPECT_EQ(drained[i].session_id, "plugin-7-cmd-ch");
+		EXPECT_EQ(drained[i].channel_incarnation, "incarnation-17");
 		EXPECT_EQ(drained[i].batch_seq, 77u);
 		EXPECT_EQ(drained[i].client_command_id, 88u);
 		EXPECT_EQ(drained[i].command_index, i);

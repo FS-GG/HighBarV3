@@ -9,6 +9,7 @@
 #include <grpcpp/security/credentials.h>
 
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -77,6 +78,35 @@ const char* CommandBatchAdmissionStatusName(
 		return "queue-full";
 	}
 	return "unknown";
+}
+
+std::string NewChannelIncarnation(const std::string& plugin_id) {
+	static std::atomic<std::uint64_t> counter{0};
+	const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+	return plugin_id + "-" + std::to_string(ticks) + "-"
+		+ std::to_string(counter.fetch_add(1, std::memory_order_relaxed) + 1);
+}
+
+::highbar::v1::CommandIssueCode AdmissionIssueCode(
+		circuit::grpc::CommandBatchAdmissionStatus status) {
+	using circuit::grpc::CommandBatchAdmissionStatus;
+	switch (status) {
+	case CommandBatchAdmissionStatus::kInvalidEmpty:
+		return ::highbar::v1::EMPTY_COMMAND;
+	case CommandBatchAdmissionStatus::kInvalidOversized:
+		return ::highbar::v1::TOO_MANY_COMMANDS;
+	case CommandBatchAdmissionStatus::kInvalidTarget:
+		return ::highbar::v1::INVALID_TARGET_UNIT;
+	case CommandBatchAdmissionStatus::kInvalidBatchSequence:
+		return ::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ;
+	case CommandBatchAdmissionStatus::kInvalidCorrelation:
+		return ::highbar::v1::MISSING_CLIENT_COMMAND_ID;
+	case CommandBatchAdmissionStatus::kQueueFull:
+		return ::highbar::v1::QUEUE_FULL;
+	case CommandBatchAdmissionStatus::kAccepted:
+		return ::highbar::v1::COMMAND_ISSUE_CODE_UNSPECIFIED;
+	}
+	return ::highbar::v1::COMMAND_ISSUE_CODE_UNSPECIFIED;
 }
 
 }  // namespace
@@ -242,6 +272,7 @@ void CoordinatorClient::CommandReaderLoop(CommandQueue* sink) {
 	// exponential backoff up to 5 s. Stops when cmd_stopping_ is set.
 	std::uint32_t backoff_ms = 200;
 	while (!cmd_stopping_.load(std::memory_order_acquire)) {
+		const std::string channel_incarnation = NewChannelIncarnation(plugin_id_);
 		AppendCoordinatorTrace(plugin_id_,
 		                      "cmd loop connect attempt backoff_ms="
 		                      + std::to_string(backoff_ms));
@@ -252,6 +283,9 @@ void CoordinatorClient::CommandReaderLoop(CommandQueue* sink) {
 		CommandChannelSubscribe sub;
 		sub.set_plugin_id(plugin_id_);
 		sub.set_schema_version(::highbar::v1::kSchemaVersion);
+		sub.set_admission_result_protocol(
+			::highbar::v1::ADMISSION_RESULT_PROTOCOL_CORRELATED_V1);
+		sub.set_channel_incarnation(channel_incarnation);
 
 		auto reader = cmd_stub_->OpenCommandChannel(cmd_ctx_.get(), sub);
 		if (!reader) {
@@ -269,7 +303,7 @@ void CoordinatorClient::CommandReaderLoop(CommandQueue* sink) {
 				                      + " ncmds=" + std::to_string(batch.commands_size()));
 				cmd_batches_received_.fetch_add(1, std::memory_order_relaxed);
 				const auto admission = AdmitCommandBatch(
-					*sink, batch, plugin_id_ + "-cmd-ch");
+					*sink, batch, plugin_id_ + "-cmd-ch", channel_incarnation);
 				if (admission.accepted()) {
 					cmd_batches_accepted_.fetch_add(1, std::memory_order_relaxed);
 					cmd_commands_received_.fetch_add(
@@ -290,6 +324,12 @@ void CoordinatorClient::CommandReaderLoop(CommandQueue* sink) {
 				AppendCoordinatorTrace(plugin_id_, outcome);
 				if (!admission.accepted()) {
 					LogError(ai_, "CoordinatorClient", outcome);
+				}
+				if (!ReportCommandBatchResult(
+						channel_incarnation, batch, admission)) {
+					LogError(ai_, "CoordinatorClient",
+					         "native admission result was not acknowledged seq="
+					         + std::to_string(batch.batch_seq()));
 				}
 			}
 			AppendCoordinatorTrace(plugin_id_, "cmd read loop ended");
@@ -330,6 +370,68 @@ void CoordinatorClient::CommandReaderLoop(CommandQueue* sink) {
 		backoff_ms = std::min<std::uint32_t>(backoff_ms * 2, 5000);
 	}
 	AppendCoordinatorTrace(plugin_id_, "cmd loop exit");
+}
+
+bool CoordinatorClient::ReportCommandBatchResult(
+		const std::string& channel_incarnation,
+		const ::highbar::v1::CommandBatch& batch,
+		const CommandBatchResult& admission) {
+	::highbar::v1::CommandBatchResultReport request;
+	request.set_plugin_id(plugin_id_);
+	request.set_channel_incarnation(channel_incarnation);
+	request.set_schema_version(::highbar::v1::kSchemaVersion);
+	auto* result = request.mutable_result();
+	result->set_batch_seq(batch.batch_seq());
+	result->set_client_command_id(
+		batch.has_client_command_id() ? batch.client_command_id() : 0);
+	result->set_accepted_command_count(
+		static_cast<std::uint32_t>(admission.accepted_command_count));
+	result->set_mode(::highbar::v1::VALIDATION_MODE_STRICT);
+	if (admission.accepted()) {
+		result->set_status(::highbar::v1::COMMAND_BATCH_ACCEPTED);
+	} else if (admission.status == CommandBatchAdmissionStatus::kQueueFull) {
+		result->set_status(::highbar::v1::COMMAND_BATCH_REJECTED_QUEUE_FULL);
+	} else {
+		result->set_status(::highbar::v1::COMMAND_BATCH_REJECTED_INVALID);
+	}
+	if (!admission.accepted()) {
+		auto* issue = result->add_issues();
+		issue->set_code(AdmissionIssueCode(admission.status));
+		issue->set_detail(CommandBatchAdmissionStatusName(admission.status));
+		issue->set_batch_seq(batch.batch_seq());
+		issue->set_client_command_id(result->client_command_id());
+		issue->set_retry_hint(
+			admission.status == CommandBatchAdmissionStatus::kQueueFull
+				? ::highbar::v1::RETRY_AFTER_QUEUE_DRAINS
+				: ::highbar::v1::RETRY_NEVER);
+	}
+
+	// The command reader is already a background thread. Bound every network
+	// attempt and retry only the exact idempotent report; commands themselves
+	// are never replayed.
+	for (int attempt = 0; attempt < 2; ++attempt) {
+		::grpc::ClientContext context;
+		context.set_deadline(std::chrono::system_clock::now()
+		                     + std::chrono::milliseconds(750));
+		::highbar::v1::CommandBatchResultReportAck ack;
+		const auto status = cmd_stub_->ReportCommandBatchResult(
+			&context, request, &ack);
+		if (status.ok()) {
+			AppendCoordinatorTrace(
+				plugin_id_, "admission result ack seq="
+				+ std::to_string(batch.batch_seq()) + " correlation="
+				+ std::to_string(result->client_command_id()) + " disposition="
+				+ std::to_string(ack.disposition()));
+			return true;
+		}
+		if (status.error_code() == ::grpc::StatusCode::UNIMPLEMENTED
+		    || status.error_code() == ::grpc::StatusCode::FAILED_PRECONDITION
+		    || cmd_stopping_.load(std::memory_order_acquire)) {
+			return false;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+	return false;
 }
 
 void CoordinatorClient::PushWorkerLoop() {

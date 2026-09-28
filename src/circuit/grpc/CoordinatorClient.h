@@ -100,6 +100,10 @@ private:
 	// OpenCommandChannel reader — background thread. Owned lifetime
 	// flows: StartCommandChannel starts it, dtor cancels + joins.
 	void CommandReaderLoop(CommandQueue* sink);
+	bool ReportCommandBatchResult(
+		const std::string& channel_incarnation,
+		const ::highbar::v1::CommandBatch& batch,
+		const struct CommandBatchResult& admission);
 	std::unique_ptr<::grpc::ClientContext> cmd_ctx_;
 	std::thread cmd_thread_;
 	std::atomic<bool> cmd_stopping_{false};

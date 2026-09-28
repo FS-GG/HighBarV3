@@ -254,6 +254,9 @@ message CommandDispatchEvent {
   CommandDispatchStatus status = 5;
   highbar.v1.CommandIssue issue = 6;
   uint32 frame = 7;
+  // OpenCommandChannel incarnation that admitted the command. Dispatch is a
+  // later outcome and is correlated independently from admission.
+  string channel_incarnation = 8;
 }
 
 message AdminAuditEvent {

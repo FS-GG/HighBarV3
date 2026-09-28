@@ -41,6 +41,19 @@ service HighBarCoordinator {
   // and dispatches on the next frame tick.
   rpc OpenCommandChannel(CommandChannelSubscribe)
       returns (stream highbar.v1.CommandBatch);
+
+  // Plugin -> coordinator native admission result. The command-reader
+  // background thread calls this only after AdmitCommandBatch has made the
+  // atomic queue decision. Reports are idempotent for the exact owning
+  // channel incarnation and command identity.
+  rpc ReportCommandBatchResult(CommandBatchResultReport)
+      returns (CommandBatchResultReportAck);
+}
+
+enum AdmissionResultProtocol {
+  ADMISSION_RESULT_PROTOCOL_UNSPECIFIED = 0;
+  ADMISSION_RESULT_PROTOCOL_LEGACY_OBSERVATION_ONLY = 1;
+  ADMISSION_RESULT_PROTOCOL_CORRELATED_V1 = 2;
 }
 
 message HeartbeatRequest {
@@ -81,6 +94,33 @@ message CommandChannelSubscribe {
 
   // Schema-version strict-equality check.
   string schema_version = 2;
+
+  // Negotiated independently of the base schema so old/new pairings are
+  // explicit. A coordinator requiring native results rejects an
+  // observation-only subscriber before forwarding any command.
+  AdmissionResultProtocol admission_result_protocol = 3;
+
+  // Fresh for every OpenCommandChannel attempt. Results from a replaced or
+  // reconnected stream can never satisfy work pending for another stream.
+  string channel_incarnation = 4;
+}
+
+message CommandBatchResultReport {
+  string plugin_id = 1;
+  string channel_incarnation = 2;
+  string schema_version = 3;
+  highbar.v1.CommandBatchResult result = 4;
+}
+
+enum CommandBatchResultReportDisposition {
+  COMMAND_BATCH_RESULT_REPORT_DISPOSITION_UNSPECIFIED = 0;
+  COMMAND_BATCH_RESULT_RECORDED = 1;
+  COMMAND_BATCH_RESULT_DUPLICATE = 2;
+  COMMAND_BATCH_RESULT_LATE = 3;
+}
+
+message CommandBatchResultReportAck {
+  CommandBatchResultReportDisposition disposition = 1;
 }
 
 // Terminal response on a PushState client-streaming RPC.

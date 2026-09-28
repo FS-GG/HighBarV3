@@ -30,7 +30,7 @@ import threading
 import argparse
 import math
 
-sys.path.insert(0, "/tmp/hb-run/pyproto")
+sys.path.insert(0, os.environ.get("HIGHBAR_PYPROTO_DIR", "/tmp/hb-run/pyproto"))
 
 import grpc
 from concurrent import futures
@@ -46,17 +46,22 @@ TOKEN_HEADER = "x-highbar-ai-token"
 class Relay:
     """Thread-safe hub connecting plugin feeds to external clients."""
 
-    def __init__(self):
+    def __init__(self, result_mode="required", result_timeout=5.0):
         # State broadcast: PushState pushes here, StreamState subscribers read.
         # Per-subscriber Queue, unbounded (best-effort; real impl would bound).
         self._state_subs_lock = threading.Lock()
         self._state_subs = []  # list[queue.Queue[state_pb2.StateUpdate]]
         self._latest_snapshot = None
-        # Command forward: SubmitCommands pushes here, OpenCommandChannel pulls.
-        # One central queue for now (future: per-plugin-session).
+        # Exactly one owning plugin command channel. Pending native admission
+        # is keyed by channel incarnation plus the full uint64 wire identity.
         self.cmd_forward = queue.Queue()
         self._cmd_channel_lock = threading.Lock()
-        self._active_cmd_channels = 0
+        self._command_owner = None
+        self._pending = {}
+        self._completed = {}
+        self._completed_order = []
+        self.result_mode = result_mode
+        self.result_timeout = result_timeout
         self.state_updates_received = 0
         self.max_seq_seen = 0
         self.commands_relayed = 0
@@ -92,38 +97,111 @@ class Relay:
                 except queue.Full:
                     pass  # slow subscriber; drop
 
-    def activate_command_channel(self):
+    def activate_command_channel(self, plugin_id, incarnation, protocol):
         with self._cmd_channel_lock:
-            self._active_cmd_channels += 1
+            if self._command_owner is not None:
+                raise RuntimeError("an owning plugin command channel is already active")
+            correlated = (
+                protocol == coordinator_pb2.ADMISSION_RESULT_PROTOCOL_CORRELATED_V1
+                and bool(incarnation)
+            )
+            if self.result_mode == "required" and not correlated:
+                raise RuntimeError("native correlated admission results are required")
+            self._command_owner = (plugin_id, incarnation, correlated)
 
-    def deactivate_command_channel(self):
+    def deactivate_command_channel(self, plugin_id, incarnation):
         with self._cmd_channel_lock:
-            if self._active_cmd_channels > 0:
-                self._active_cmd_channels -= 1
-        self.clear_forwarded_commands()
+            if (self._command_owner is None
+                    or self._command_owner[:2] != (plugin_id, incarnation)):
+                return
+            self._command_owner = None
+            for key, pending in list(self._pending.items()):
+                if key[0] == incarnation:
+                    pending["error"] = "owning plugin channel disconnected after forwarding"
+                    pending["event"].set()
+            self._clear_forwarded_commands_locked()
 
     def has_active_command_channel(self):
         with self._cmd_channel_lock:
-            return self._active_cmd_channels > 0
+            return self._command_owner is not None
 
-    def clear_forwarded_commands(self):
+    def _clear_forwarded_commands_locked(self):
         while True:
             try:
                 self.cmd_forward.get_nowait()
             except queue.Empty:
                 return
 
-    def forward_command(self, batch):
-        if not self.has_active_command_channel():
-            raise RuntimeError("plugin command channel is not connected")
-        self.cmd_forward.put(batch)
-        self.commands_relayed += 1
+    def register_and_forward(self, batch):
+        with self._cmd_channel_lock:
+            if self._command_owner is None:
+                raise RuntimeError("plugin command channel is not connected")
+            _, incarnation, correlated = self._command_owner
+            if self.result_mode == "required" and not correlated:
+                raise RuntimeError("owning plugin is observation-only")
+            if not correlated:
+                self.cmd_forward.put((incarnation, batch))
+                self.commands_relayed += 1
+                return None
+            key = (incarnation, batch.batch_seq, batch.client_command_id)
+            if key in self._pending or key in self._completed:
+                raise ValueError("duplicate pending command identity")
+            pending = {"event": threading.Event(), "result": None, "error": None}
+            # Registration precedes the queue write while holding the owner
+            # lock, so even an immediate native report finds its waiter.
+            self._pending[key] = pending
+            self.cmd_forward.put((incarnation, batch))
+            self.commands_relayed += 1
+            return key, pending
+
+    def complete_result(self, plugin_id, incarnation, result):
+        key = (incarnation, result.batch_seq, result.client_command_id)
+        with self._cmd_channel_lock:
+            if (self._command_owner is None
+                    or self._command_owner[:2] != (plugin_id, incarnation)):
+                raise PermissionError("result is not from the owning plugin incarnation")
+            pending = self._pending.get(key)
+            if pending is None:
+                return (coordinator_pb2.COMMAND_BATCH_RESULT_DUPLICATE
+                        if key in self._completed
+                        else coordinator_pb2.COMMAND_BATCH_RESULT_LATE)
+            if pending["result"] is not None:
+                return coordinator_pb2.COMMAND_BATCH_RESULT_DUPLICATE
+            pending["result"] = commands_pb2.CommandBatchResult()
+            pending["result"].CopyFrom(result)
+            pending["event"].set()
+            return coordinator_pb2.COMMAND_BATCH_RESULT_RECORDED
+
+    def await_result(self, key, pending, context):
+        deadline = time.monotonic() + self.result_timeout
+        while not pending["event"].wait(timeout=min(0.05, max(0, deadline - time.monotonic()))):
+            if not context.is_active():
+                self._forget_pending(key)
+                raise RuntimeError("submitter cancelled after command forwarding")
+            if time.monotonic() >= deadline:
+                self._forget_pending(key)
+                raise TimeoutError("native admission result timed out after command forwarding")
+        with self._cmd_channel_lock:
+            self._pending.pop(key, None)
+            if pending["result"] is not None:
+                self._completed[key] = pending["result"].SerializeToString()
+                self._completed_order.append(key)
+                while len(self._completed_order) > 4096:
+                    old = self._completed_order.pop(0)
+                    self._completed.pop(old, None)
+        if pending["error"] is not None:
+            raise RuntimeError(pending["error"])
+        return pending["result"]
+
+    def _forget_pending(self, key):
+        with self._cmd_channel_lock:
+            self._pending.pop(key, None)
 
 
 def _validate_finite_fields(message, path):
     for field, value in message.ListFields():
         field_path = f"{path}.{field.name}" if path else field.name
-        if field.label == FieldDescriptor.LABEL_REPEATED:
+        if field.is_repeated:
             if field.type == FieldDescriptor.TYPE_MESSAGE:
                 for idx, item in enumerate(value):
                     err = _validate_finite_fields(item, f"{field_path}[{idx}]")
@@ -199,7 +277,17 @@ class CoordSvc(coordinator_pb2_grpc.HighBarCoordinatorServicer):
     def OpenCommandChannel(self, request, context):
         print(f"[cmd-ch] plugin={request.plugin_id} subscribed "
               f"peer={context.peer()}", flush=True)
-        self.relay.activate_command_channel()
+        if request.schema_version != "1.0.0":
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION,
+                          "command channel schema mismatch")
+        try:
+            self.relay.activate_command_channel(
+                request.plugin_id,
+                request.channel_incarnation,
+                request.admission_result_protocol,
+            )
+        except RuntimeError as exc:
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, str(exc))
         disconnected = threading.Event()
         context.add_callback(disconnected.set)
         # Serve forwarded commands from the central queue until the
@@ -207,7 +295,9 @@ class CoordSvc(coordinator_pb2_grpc.HighBarCoordinatorServicer):
         try:
             while not disconnected.is_set():
                 try:
-                    batch = self.relay.cmd_forward.get(timeout=0.5)
+                    incarnation, batch = self.relay.cmd_forward.get(timeout=0.5)
+                    if incarnation != request.channel_incarnation:
+                        continue
                     command_kinds = [
                         command.WhichOneof("command") or "unset"
                         for command in batch.commands
@@ -222,9 +312,25 @@ class CoordSvc(coordinator_pb2_grpc.HighBarCoordinatorServicer):
         except grpc.RpcError:
             pass
         finally:
-            self.relay.deactivate_command_channel()
+            self.relay.deactivate_command_channel(
+                request.plugin_id, request.channel_incarnation)
         print(f"[cmd-ch] plugin={request.plugin_id} disconnected",
               flush=True)
+
+    def ReportCommandBatchResult(self, request, context):
+        if request.schema_version != "1.0.0":
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION,
+                          "admission result schema mismatch")
+        try:
+            disposition = self.relay.complete_result(
+                request.plugin_id,
+                request.channel_incarnation,
+                request.result,
+            )
+        except PermissionError as exc:
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, str(exc))
+        return coordinator_pb2.CommandBatchResultReportAck(
+            disposition=disposition)
 
 
 # ----------------------------------------------------------------------
@@ -330,26 +436,49 @@ class ProxySvc(service_pb2_grpc.HighBarProxyServicer):
                   f"disconnected", flush=True)
 
     def SubmitCommands(self, request_iterator, context):
-        n = 0
+        results = []
+        forwarded = 0
         for batch in request_iterator:
+            if forwarded >= 256:
+                context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED,
+                              "SubmitCommands is limited to 256 batches")
             err = validate_command_batch(batch)
             if err is not None:
                 print(f"[proxy] SubmitCommands invalid from {context.peer()}: "
                       f"{err}", flush=True)
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, err)
             try:
-                self.relay.forward_command(batch)
+                registered = self.relay.register_and_forward(batch)
+            except ValueError as exc:
+                context.abort(grpc.StatusCode.ALREADY_EXISTS, str(exc))
             except RuntimeError as exc:
                 context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
-            n += 1
+            forwarded += 1
+            if registered is not None:
+                try:
+                    results.append(self.relay.await_result(*registered, context))
+                except TimeoutError as exc:
+                    context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, str(exc))
+                except RuntimeError as exc:
+                    context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
         print(f"[proxy] SubmitCommands from {context.peer()}: "
-              f"received {n} batches, forwarded", flush=True)
-        return service_pb2.CommandAck(
-            last_accepted_batch_seq=n,
-            batches_accepted=n,
-            batches_rejected_invalid=0,
-            batches_rejected_full=0,
-        )
+              f"received {forwarded} batches, native_results={len(results)}",
+              flush=True)
+        ack = service_pb2.CommandAck()
+        ack.results.extend(results)
+        for result in results:
+            if result.status in (
+                    commands_pb2.COMMAND_BATCH_ACCEPTED,
+                    commands_pb2.COMMAND_BATCH_ACCEPTED_WITH_WARNINGS):
+                ack.batches_accepted += 1
+                ack.last_accepted_batch_seq = result.batch_seq
+            elif result.status == commands_pb2.COMMAND_BATCH_REJECTED_QUEUE_FULL:
+                ack.batches_rejected_full += 1
+            else:
+                ack.batches_rejected_invalid += 1
+        # Explicit legacy mode remains observation-only: forwarding is visible
+        # in logs, while an empty result list never claims native acceptance.
+        return ack
 
     def InvokeCallback(self, request, context):
         if not self.callback_proxy_endpoint:
@@ -396,6 +525,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--endpoint", required=True)
     p.add_argument("--id", default=f"coord-{os.getpid()}")
+    p.add_argument("--result-mode", choices=("required", "legacy-observation-only"),
+                   default="required")
+    p.add_argument("--result-timeout", type=float, default=5.0)
     args = p.parse_args()
 
     if args.endpoint.startswith("unix:"):
@@ -403,7 +535,7 @@ def main():
         try: os.unlink(path)
         except FileNotFoundError: pass
 
-    relay = Relay()
+    relay = Relay(args.result_mode, args.result_timeout)
     coord_svc = CoordSvc(args.id, relay)
     proxy_svc = ProxySvc(args.id, relay)
 

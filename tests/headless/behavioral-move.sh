@@ -64,6 +64,7 @@ ENGINE_LOG="$RUN_DIR/highbar-launch.log"
 ENGINE_PID_FILE="$RUN_DIR/highbar-launch.pid"
 WRITE_DIR="${HIGHBAR_WRITE_DIR:-$HOME/.local/state/Beyond All Reason}"
 CLIENT_LOG="$RUN_DIR/behavioral-move.log"
+export HIGHBAR_COORDINATOR_OWNER_SKIRMISH_AI_ID="${HIGHBAR_COORDINATOR_OWNER_SKIRMISH_AI_ID:-1}"
 
 cleanup() {
     [[ -f "$ENGINE_PID_FILE" ]] && kill -TERM "$(cat "$ENGINE_PID_FILE")" 2>/dev/null
@@ -87,10 +88,19 @@ if [[ ! -S "$COORD_SOCK" ]]; then
     exit 77
 fi
 
-LAUNCH_OUT=$("$HEADLESS_DIR/_launch.sh" \
-    --start-script "$START_SCRIPT" \
-    --coordinator "unix:$COORD_SOCK" \
-    --runtime-dir "$RUN_DIR" 2>&1)
+LAUNCH_ARGS=(
+    --start-script "$START_SCRIPT"
+    --coordinator "unix:$COORD_SOCK"
+    --runtime-dir "$RUN_DIR"
+    --writedir "$WRITE_DIR"
+)
+if [[ -n "${HIGHBAR_ENGINE:-}" ]]; then
+    LAUNCH_ARGS+=(--engine "$HIGHBAR_ENGINE")
+fi
+if [[ -n "${HIGHBAR_PLUGIN_SO:-}" ]]; then
+    LAUNCH_ARGS+=(--plugin-so "$HIGHBAR_PLUGIN_SO")
+fi
+LAUNCH_OUT=$("$HEADLESS_DIR/_launch.sh" "${LAUNCH_ARGS[@]}" 2>&1)
 LAUNCH_RC=$?
 if [[ $LAUNCH_RC -eq 77 ]]; then
     echo "behavioral-move: _launch.sh prereq missing — skip" >&2
@@ -123,7 +133,7 @@ import time
 
 import grpc
 from highbar import service_pb2, service_pb2_grpc
-from highbar import commands_pb2
+from highbar import commands_pb2, state_pb2
 
 endpoint = "unix:" + sys.argv[1]
 ch = grpc.insecure_channel(endpoint)
@@ -137,7 +147,7 @@ resp = stub.Hello(service_pb2.HelloRequest(
 print(f"[bmove] Hello OK session={resp.session_id}", flush=True)
 
 # Watch state in a background thread so we can snapshot-diff.
-shared = {"snapshots": [], "stop": False, "err": None}
+shared = {"snapshots": [], "dispatches": [], "stop": False, "err": None}
 
 def watcher():
     try:
@@ -150,6 +160,12 @@ def watcher():
                 # Keep a rolling history so the main thread can pick up
                 # snapshots before and after dispatch.
                 shared["snapshots"].append((time.monotonic(), upd.snapshot))
+            elif upd.WhichOneof("payload") == "delta":
+                for event in upd.delta.events:
+                    if event.WhichOneof("kind") == "command_dispatch":
+                        copy = state_pb2.CommandDispatchEvent()
+                        copy.CopyFrom(event.command_dispatch)
+                        shared["dispatches"].append(copy)
     except grpc.RpcError as e:
         shared["err"] = e.code().name
 
@@ -192,9 +208,12 @@ print(f"[bmove] commander_id={cmdr_id} before=({px:.1f}, {py:.1f}, {pz:.1f})",
       flush=True)
 
 # Dispatch MoveUnit(commander, pre_pos + (500, 0, 0)).
-def gen():
+valid_correlation = (1 << 63) + 17
+
+def valid_gen():
     batch = commands_pb2.CommandBatch()
     batch.batch_seq = 1
+    batch.client_command_id = valid_correlation
     batch.target_unit_id = cmdr_id
     cmd = batch.commands.add()
     cmd.move_unit.unit_id = cmdr_id
@@ -205,9 +224,43 @@ def gen():
     cmd.move_unit.timeout = 0
     yield batch
 
-ack = stub.SubmitCommands(gen(), timeout=10)
+ack = stub.SubmitCommands(valid_gen(), timeout=10)
 print(f"[bmove] dispatched MoveUnit to ({px+500:.1f}, {py:.1f}, {pz:.1f}) "
-      f"accepted={ack.batches_accepted}", flush=True)
+      f"accepted={ack.batches_accepted} results={len(ack.results)}", flush=True)
+if (ack.batches_accepted != 1 or len(ack.results) != 1
+        or ack.results[0].batch_seq != 1
+        or ack.results[0].client_command_id != valid_correlation
+        or ack.results[0].status != commands_pb2.COMMAND_BATCH_ACCEPTED):
+    print(f"[bmove] invalid native accepted ACK: {ack}", flush=True)
+    sys.exit(1)
+
+# A syntactically forwardable batch with no correlation is rejected at the
+# native queue boundary. Its opposite destination makes accidental dispatch
+# distinguishable from the valid command's observed effect.
+def invalid_gen():
+    batch = commands_pb2.CommandBatch()
+    batch.batch_seq = 2
+    batch.target_unit_id = cmdr_id
+    cmd = batch.commands.add()
+    cmd.move_unit.unit_id = cmdr_id
+    cmd.move_unit.to_position.x = px - 500.0
+    cmd.move_unit.to_position.y = py
+    cmd.move_unit.to_position.z = pz
+    yield batch
+
+rejected = stub.SubmitCommands(invalid_gen(), timeout=10)
+print(f"[bmove] invalid native ACK accepted={rejected.batches_accepted} "
+      f"rejected_invalid={rejected.batches_rejected_invalid} "
+      f"results={len(rejected.results)}", flush=True)
+if (rejected.batches_accepted != 0
+        or rejected.batches_rejected_invalid != 1
+        or len(rejected.results) != 1
+        or rejected.results[0].batch_seq != 2
+        or rejected.results[0].client_command_id != 0
+        or rejected.results[0].status
+           != commands_pb2.COMMAND_BATCH_REJECTED_INVALID):
+    print(f"[bmove] invalid native rejected ACK: {rejected}", flush=True)
+    sys.exit(1)
 
 # Wait 120 engine frames (~4s wall clock at 30fps).
 target_frame = before_snap.frame_number + 120
@@ -225,6 +278,23 @@ while time.monotonic() < post_deadline:
     time.sleep(0.2)
 
 shared["stop"] = True
+
+valid_dispatches = [event for event in shared["dispatches"]
+                    if event.batch_seq == 1
+                    and event.client_command_id == valid_correlation]
+invalid_dispatches = [event for event in shared["dispatches"]
+                      if event.batch_seq == 2]
+if not any(event.status == state_pb2.COMMAND_DISPATCH_APPLIED
+           for event in valid_dispatches):
+    print(f"[bmove] no correlated applied dispatch; seen={valid_dispatches}",
+          flush=True)
+    sys.exit(1)
+if invalid_dispatches:
+    print(f"[bmove] rejected command unexpectedly dispatched: {invalid_dispatches}",
+          flush=True)
+    sys.exit(1)
+print(f"[bmove] dispatch applied batch=1 correlation={valid_correlation} "
+      f"incarnation={valid_dispatches[-1].channel_incarnation}", flush=True)
 
 if after is None:
     # Either commander destroyed or snapshot stream stalled.
