@@ -17,6 +17,12 @@ service HighBarLiveControl {
   // the existing correlated CommandBatchResult carrier.
   rpc OpenLiveCommandChannel(LiveCommandSubscribe)
       returns (stream LiveCommandBatch);
+
+  // Native-authored capability and snapshot metadata. This is the only source
+  // of live unit lifetimes and eligibility; browser/client echoes are never
+  // authoritative.
+  rpc ReportLiveState(LiveStateReport)
+      returns (LiveStateReportAck);
 }
 
 enum LiveControlProtocol {
@@ -62,6 +68,20 @@ enum LiveFenceReason {
   LIVE_FENCE_TARGET_LIFETIME_CHANGED = 11;
   LIVE_FENCE_CAPABILITY_CHANGED = 12;
   LIVE_FENCE_COMMAND_EXPIRED = 13;
+}
+
+enum LiveStateReportDisposition {
+  LIVE_STATE_REPORT_DISPOSITION_UNSPECIFIED = 0;
+  LIVE_STATE_REPORT_RECORDED = 1;
+  LIVE_STATE_REPORT_DUPLICATE = 2;
+  LIVE_STATE_REPORT_STALE = 3;
+  LIVE_STATE_REPORT_REFUSED = 4;
+}
+
+enum NativeLiveUnitEligibility {
+  NATIVE_LIVE_UNIT_ELIGIBILITY_UNSPECIFIED = 0;
+  NATIVE_LIVE_UNIT_OWNED_ACTOR = 1;
+  NATIVE_LIVE_UNIT_VISUAL_TARGET = 2;
 }
 
 message LiveBinding {
@@ -136,6 +156,42 @@ message NativeObservationBasis {
   uint32 effective_cadence_frames = 8;
 }
 
+message LiveStateReporter {
+  string plugin_id = 1;
+  string schema_version = 2;
+  LiveControlProtocol protocol = 3;
+  string process_incarnation = 4;
+  bytes match_incarnation = 5;
+  string state_channel_incarnation = 6;
+}
+
+message NativeLiveUnitMetadata {
+  NativeUnitReference reference = 1;
+  NativeLiveUnitEligibility eligibility = 2;
+}
+
+message LiveSnapshotMetadata {
+  NativeObservationBasis basis = 1;
+  int32 perspective_team_id = 2;
+  // Bounded by LiveNativeCapabilities.max_reported_units. Radar-only and
+  // otherwise hidden enemy identities must not appear.
+  repeated NativeLiveUnitMetadata units = 3;
+}
+
+message LiveStateReport {
+  LiveStateReporter reporter = 1;
+  uint64 report_sequence = 2;
+  oneof body {
+    LiveNativeCapabilities capabilities = 10;
+    LiveSnapshotMetadata snapshot = 11;
+  }
+}
+
+message LiveStateReportAck {
+  uint64 report_sequence = 1;
+  LiveStateReportDisposition disposition = 2;
+}
+
 message LiveCommandAttribution {
   bytes parent_id = 1;
   string originating_client_id = 2;
@@ -145,6 +201,9 @@ message LiveCommandAttribution {
 }
 
 message LiveCommandBatch {
+  // Live v1 requires exactly one command in batch.commands. It must match
+  // actor and semantic_action; extra legacy commands are refused rather than
+  // inheriting the single actor fence.
   CommandBatch batch = 1;
   LiveBinding binding = 2;
   LiveCommandAttribution attribution = 3;
@@ -179,5 +238,5 @@ message LiveNativeCapabilities {
   bool supports_stop = 13;
   bool supports_move = 14;
   bool supports_attack_visible_unit = 15;
+  uint32 max_reported_units = 16;
 }
-
