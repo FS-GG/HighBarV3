@@ -437,7 +437,8 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	const auto identity_seed = coordinator_plugin_id_ + "-" + std::to_string(NowMicros());
 	live_control_state_ = std::make_unique<grpc::LiveControlState>(
 		coordinator_plugin_id_, identity_seed + "-process", identity_seed + "-match",
-		identity_seed + "-state", identity_seed + "-command", identity_seed + "-control");
+		identity_seed + "-state", identity_seed + "-command", identity_seed + "-control",
+		live_max_reported_units_);
 	for (const auto& [id, unit] : circuit->GetTeamUnits()) {
 		if (unit != nullptr && !unit->IsDead()) live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(id));
 	}
@@ -994,6 +995,7 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 
 		// Constitution V: stamp CLOCK_MONOTONIC_ns at the moment we hand
 		// the frame to the fan-out. Same pattern as CoordinatorClient.
+		const auto snapshot_emitted_at = grpc::LiveControlState::Clock::now();
 		{
 			struct timespec ts;
 			clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1017,13 +1019,16 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 		if (coordinator_client_) {
 			const bool enqueued = coordinator_client_->PushStateUpdate(update);
 			if (enqueued && live_control_state_) {
-				::highbar::v1::LiveSnapshotMetadata metadata;
-				*metadata.mutable_basis() = live_control_state_->RecordBasis(
-					update.seq(), update.frame(), update.send_monotonic_ns(), effective_cadence_frames);
-				metadata.set_perspective_team_id(circuit->GetTeamId());
-				for (auto& unit : live_control_state_->SnapshotUnitMetadata(live_max_reported_units_))
-					*metadata.add_units() = std::move(unit);
-				coordinator_client_->ReportLiveSnapshot(metadata);
+				auto units = live_control_state_->SnapshotUnitMetadata();
+				if (units) {
+					::highbar::v1::LiveSnapshotMetadata metadata;
+					*metadata.mutable_basis() = live_control_state_->RecordBasis(
+						update.seq(), update.frame(), update.send_monotonic_ns(), effective_cadence_frames,
+						std::chrono::milliseconds(live_max_observation_age_ms_), snapshot_emitted_at);
+					metadata.set_perspective_team_id(circuit->GetTeamId());
+					for (auto& unit : *units) *metadata.add_units() = std::move(unit);
+					coordinator_client_->ReportLiveSnapshot(metadata);
+				}
 			}
 		}
 
@@ -1382,6 +1387,17 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 			static_cast<std::uint32_t>(entry.authoritative_target_unit_id));
 		dispatch_event->set_frame(CurrentFrame());
 		dispatch_event->set_channel_incarnation(entry.channel_incarnation);
+		if (!entry.live && live_control_state_
+		    && !live_control_state_->LegacyGameplayAllowed()) {
+			dispatch_event->set_status(
+				::highbar::v1::COMMAND_DISPATCH_SKIPPED_CAPABILITY_CHANGED);
+			auto* issue = dispatch_event->mutable_issue();
+			issue->set_code(::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ);
+			issue->set_field_path("live_authority");
+			issue->set_detail("legacy gameplay fenced by live authority session");
+			issue->set_retry_hint(::highbar::v1::RETRY_NEVER);
+			continue;
+		}
 		const auto target_id = grpc::EffectiveDispatchTargetUnitId(
 			entry.authoritative_target_unit_id, cmd);
 		if (!target_id.has_value()) {
@@ -1488,7 +1504,11 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 				}) : grpc::LiveFenceResult{};
 				dispatched = guarded.ok;
 			} else {
-				dispatched = grpc::DispatchCommand(circuit, unit_ctx, cmd, selected_attack_target);
+				dispatched = live_control_state_
+					? live_control_state_->DispatchLegacyGuarded([&] {
+						return grpc::DispatchCommand(circuit, unit_ctx, cmd, selected_attack_target);
+					})
+					: grpc::DispatchCommand(circuit, unit_ctx, cmd, selected_attack_target);
 			}
 			if (dispatched) {
 				dispatch_event->set_status(

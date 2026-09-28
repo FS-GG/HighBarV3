@@ -133,6 +133,9 @@ CommandBatchResult AdmitLiveCommandBatch(
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
 	if (!state.CheckAuthority(live.binding(), now).ok || !state.BasisKnown(live.basis()))
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+	const auto native_basis_expiry = state.BasisExpiry(live.basis());
+	if (!native_basis_expiry || now >= *native_basis_expiry)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
 	if (live.remaining_basis_validity_ms() == 0
 	    || live.remaining_command_lifetime_ms() == 0
 	    || live.remaining_lease_validity_ms() == 0)
@@ -170,6 +173,8 @@ CommandBatchResult AdmitLiveCommandBatch(
 	if (!semantic_ok) return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
 	if (batch.batch_seq() == 0)
 		return {CommandBatchAdmissionStatus::kInvalidBatchSequence, 0};
+	if (!state.LiveBatchFresh(live))
+		return {CommandBatchAdmissionStatus::kDuplicate, 0};
 	if (!batch.has_client_command_id() || batch.client_command_id() == 0)
 		return {CommandBatchAdmissionStatus::kInvalidCorrelation, 0};
 	QueuedCommand q;
@@ -179,11 +184,14 @@ CommandBatchResult AdmitLiveCommandBatch(
 	q.live = true; q.live_binding = live.binding(); q.live_basis = live.basis(); q.live_actor = live.actor();
 	if (live.has_visible_attack_target()) q.live_attack_target = live.visible_attack_target();
 	q.live_semantic_action = live.semantic_action();
-	q.live_basis_deadline = now + std::chrono::milliseconds(live.remaining_basis_validity_ms());
+	q.live_basis_deadline = std::min(
+		*native_basis_expiry,
+		now + std::chrono::milliseconds(live.remaining_basis_validity_ms()));
 	q.live_command_deadline = now + std::chrono::milliseconds(live.remaining_command_lifetime_ms());
 	q.live_lease_deadline = now + std::chrono::milliseconds(live.remaining_lease_validity_ms());
 	std::vector<QueuedCommand> one; one.push_back(std::move(q));
 	if (!queue.TryPushBatch(std::move(one))) return {CommandBatchAdmissionStatus::kQueueFull, 0};
+	state.RememberLiveBatch(live);
 	return {CommandBatchAdmissionStatus::kAccepted, 1};
 }
 

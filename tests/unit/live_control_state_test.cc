@@ -53,7 +53,7 @@ TEST(LiveControlState, LifetimesChangeOnRemovalButVisibilityDoesNotChangeIdentit
 TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
 	const auto actor_life=state->MarkOwnedPresent(0);
-	const auto basis=state->RecordBasis(9,30,123456,30);
+	const auto basis=state->RecordBasis(9,30,123456,30,std::chrono::milliseconds(500),LiveControlState::Clock::time_point{});
 	CommandQueue queue(nullptr,4);
 	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
 	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor_life);
@@ -64,6 +64,8 @@ TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 	batch->set_client_command_id(9007199254740993ULL); batch->add_commands()->mutable_stop()->set_unit_id(0);
 	const auto result=AdmitLiveCommandBatch(queue,live,"live",*state,LiveControlState::Clock::time_point{});
 	ASSERT_TRUE(result.accepted()); std::vector<QueuedCommand> drained; ASSERT_EQ(queue.Drain(&drained),1u);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,live,"live",*state,LiveControlState::Clock::time_point{}).status,
+	          CommandBatchAdmissionStatus::kDuplicate);
 	EXPECT_TRUE(drained[0].live); EXPECT_EQ(drained[0].authoritative_target_unit_id,0);
 	EXPECT_EQ(drained[0].client_command_id,9007199254740993ULL);
 	EXPECT_EQ(drained[0].live_actor.lifetime(),actor_life);
@@ -73,7 +75,7 @@ TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 TEST(LiveControlState, AppendIsExactlyShift32AndAttackRequiresTypedTarget) {
 	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
 	const auto actor=state->MarkOwnedPresent(0); const auto target=state->MarkEnemyPresent(1,true);
-	const auto basis=state->RecordBasis(10,31,123457,30); CommandQueue queue(nullptr,4);
+	const auto basis=state->RecordBasis(10,31,123457,30,std::chrono::milliseconds(500),LiveControlState::Clock::time_point{}); CommandQueue queue(nullptr,4);
 	auto base=[&]{ LiveCommandBatch l; *l.mutable_binding()=Binding(1); *l.mutable_basis()=basis;
 		l.mutable_actor()->set_id(0); l.mutable_actor()->set_lifetime(actor);
 		l.set_remaining_basis_validity_ms(500); l.set_remaining_command_lifetime_ms(500); l.set_remaining_lease_validity_ms(500);
@@ -96,7 +98,7 @@ TEST(LiveControlState, DrainFenceUsesControlledClockAndCurrentActorLifetime) {
 	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
 	QueuedCommand q; q.live=true; q.live_binding=Binding(1); q.live_actor.set_id(0);
 	q.live_actor.set_lifetime(state->MarkOwnedPresent(0));
-	q.live_basis=state->RecordBasis(20,40,200000,30);
+	q.live_basis=state->RecordBasis(20,40,200000,30,std::chrono::milliseconds(500),t0);
 	q.live_basis_deadline=t0+std::chrono::milliseconds(500);
 	q.live_command_deadline=t0+std::chrono::milliseconds(400);
 	q.live_lease_deadline=t0+std::chrono::milliseconds(800);
@@ -118,7 +120,7 @@ TEST(LiveControlState, AttackFenceRejectsVisibilityLossAndTargetReuse) {
 	q.live_actor.set_id(0); q.live_actor.set_lifetime(state->MarkOwnedPresent(0));
 	q.live_attack_target.emplace(); q.live_attack_target->set_id(1);
 	q.live_attack_target->set_lifetime(state->MarkEnemyPresent(1,true));
-	q.live_basis=state->RecordBasis(21,41,200001,30);
+	q.live_basis=state->RecordBasis(21,41,200001,30,std::chrono::milliseconds(500),t0);
 	q.live_basis_deadline=q.live_command_deadline=q.live_lease_deadline=t0+std::chrono::seconds(1);
 	EXPECT_TRUE(state->CheckQueuedCommand(q,t0).ok);
 	state->MarkEnemyVisual(1,false);
@@ -133,12 +135,95 @@ TEST(LiveControlState, RevocationCannotInterleaveWithGuardedDispatch) {
 	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
 	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
 	QueuedCommand q; q.live=true; q.live_binding=Binding(1); q.live_actor.set_id(0);
-	q.live_actor.set_lifetime(state->MarkOwnedPresent(0)); q.live_basis=state->RecordBasis(22,42,200002,30);
+	q.live_actor.set_lifetime(state->MarkOwnedPresent(0)); q.live_basis=state->RecordBasis(22,42,200002,30,std::chrono::milliseconds(500),t0);
 	q.live_basis_deadline=q.live_command_deadline=q.live_lease_deadline=t0+std::chrono::seconds(1);
 	bool called=false; auto result=state->DispatchGuarded(q,[&]{ called=true; return true; },t0);
 	EXPECT_TRUE(result.ok); EXPECT_TRUE(called);
 	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_REVOKE,2,0);
 	called=false; result=state->DispatchGuarded(q,[&]{ called=true; return true; },t0);
 	EXPECT_FALSE(result.ok); EXPECT_FALSE(called); EXPECT_EQ(result.reason,LIVE_FENCE_AUTHORITY_REVOKED);
+}
+
+TEST(LiveControlState, NativeEmissionAgeCannotBeRenewedByDelayedTransport) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1,2000);
+	const auto actor=state->MarkOwnedPresent(0);
+	const auto basis=state->RecordBasis(30,60,300000,30,std::chrono::milliseconds(500),t0);
+	auto live=LiveCommandBatch{}; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor);
+	live.set_semantic_action(LIVE_SEMANTIC_ACTION_STOP);
+	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(1000);
+	live.set_remaining_lease_validity_ms(1000);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(30); batch->set_target_unit_id(0);
+	batch->set_client_command_id(30); batch->add_commands()->mutable_stop()->set_unit_id(0);
+	CommandQueue queue(nullptr,2);
+	const auto delayed=t0+std::chrono::milliseconds(400);
+	ASSERT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,delayed).accepted());
+	std::vector<QueuedCommand> drained; ASSERT_EQ(queue.Drain(&drained),1u);
+	EXPECT_TRUE(state->CheckQueuedCommand(drained[0],t0+std::chrono::milliseconds(499)).ok);
+	auto expired=state->CheckQueuedCommand(drained[0],t0+std::chrono::milliseconds(500));
+	EXPECT_EQ(expired.reason,LIVE_FENCE_BASIS_EXPIRED);
+	const auto fresh_basis=state->RecordBasis(31,61,300001,30,std::chrono::milliseconds(500),delayed);
+	*live.mutable_basis()=fresh_basis; live.set_remaining_basis_validity_ms(50);
+	live.mutable_batch()->set_batch_seq(31); live.mutable_batch()->set_client_command_id(31);
+	ASSERT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,delayed).accepted());
+	drained.clear(); ASSERT_EQ(queue.Drain(&drained),1u);
+	EXPECT_TRUE(state->CheckQueuedCommand(drained[0],t0+std::chrono::milliseconds(449)).ok);
+	EXPECT_EQ(state->CheckQueuedCommand(drained[0],t0+std::chrono::milliseconds(450)).reason,
+	          LIVE_FENCE_BASIS_EXPIRED);
+	*live.mutable_basis()=basis; live.set_remaining_basis_validity_ms(500);
+	live.mutable_batch()->set_batch_seq(32); live.mutable_batch()->set_client_command_id(32);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,
+		t0+std::chrono::milliseconds(501)).accepted());
+}
+
+TEST(LiveControlState, LegacyQueuedWorkIsFencedWhenLiveSessionEngages) {
+	auto state=State();
+	EXPECT_TRUE(state->LegacyGameplayAllowed());
+	CommandQueue queue(nullptr,2); QueuedCommand legacy;
+	ASSERT_TRUE(queue.TryPush(std::move(legacy)));
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	EXPECT_FALSE(state->LegacyGameplayAllowed());
+	std::vector<QueuedCommand> drained; ASSERT_EQ(queue.Drain(&drained),1u);
+	int engine_calls=0;
+	EXPECT_FALSE(state->DispatchLegacyGuarded([&]{ ++engine_calls; return true; }));
+	EXPECT_EQ(engine_calls,0);
+}
+
+TEST(LiveControlState, TotalOwnedAndVisualMetadataOverflowRefusesAuthority) {
+	auto state=std::make_unique<LiveControlState>("p","proc","match","state","cmd","ctl",2);
+	state->MarkOwnedPresent(0); state->MarkEnemyPresent(1,true); state->MarkEnemyPresent(2,true);
+	EXPECT_FALSE(state->SnapshotUnitMetadata().has_value());
+	EXPECT_EQ(Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1).disposition(),LIVE_CONTROL_ACK_REFUSED);
+}
+
+TEST(LiveControlState, ExpiredLeaseCannotBeRenewedAtSameEpoch) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	LiveControlDirective arm; arm.set_kind(LIVE_CONTROL_DIRECTIVE_KIND_ARM); *arm.mutable_binding()=Binding(1);
+	arm.set_control_sequence(1); arm.set_lease_duration_ms(100);
+	EXPECT_EQ(state->ApplyDirective(arm,t0).disposition(),LIVE_CONTROL_ACK_RECORDED);
+	LiveControlDirective renew; renew.set_kind(LIVE_CONTROL_DIRECTIVE_KIND_RENEW); *renew.mutable_binding()=Binding(1);
+	renew.set_control_sequence(2); renew.set_lease_duration_ms(100);
+	EXPECT_EQ(state->ApplyDirective(renew,t0+std::chrono::milliseconds(100)).disposition(),LIVE_CONTROL_ACK_REFUSED);
+	LiveControlDirective fresh; fresh.set_kind(LIVE_CONTROL_DIRECTIVE_KIND_ARM); *fresh.mutable_binding()=Binding(2);
+	fresh.set_control_sequence(3); fresh.set_lease_duration_ms(100);
+	EXPECT_EQ(state->ApplyDirective(fresh,t0+std::chrono::milliseconds(101)).disposition(),LIVE_CONTROL_ACK_RECORDED);
+}
+
+TEST(LiveControlState, ReplacedControlIncarnationCannotReuseAuthority) {
+	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto old=Binding(1);
+	state->ReplaceChannels("cmd-replacement","ctl-replacement");
+	EXPECT_FALSE(state->CheckAuthority(old,LiveControlState::Clock::time_point{}).ok);
+	LiveControlDirective stale; stale.set_kind(LIVE_CONTROL_DIRECTIVE_KIND_RENEW);
+	*stale.mutable_binding()=old; stale.set_control_sequence(2); stale.set_lease_duration_ms(1000);
+	EXPECT_EQ(state->ApplyDirective(stale,LiveControlState::Clock::time_point{}).disposition(),
+	          LIVE_CONTROL_ACK_REFUSED);
+	auto replacement=Binding(2); replacement.set_command_channel_incarnation("cmd-replacement");
+	replacement.set_control_channel_incarnation("ctl-replacement");
+	LiveControlDirective fresh; fresh.set_kind(LIVE_CONTROL_DIRECTIVE_KIND_ARM);
+	*fresh.mutable_binding()=replacement; fresh.set_control_sequence(1); fresh.set_lease_duration_ms(1000);
+	EXPECT_EQ(state->ApplyDirective(fresh,LiveControlState::Clock::time_point{}).disposition(),
+	          LIVE_CONTROL_ACK_RECORDED);
 }
 } // namespace

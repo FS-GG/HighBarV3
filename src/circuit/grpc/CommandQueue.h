@@ -56,6 +56,7 @@ enum class CommandBatchAdmissionStatus {
 	kInvalidTarget,
 	kInvalidBatchSequence,
 	kInvalidCorrelation,
+	kDuplicate,
 	kQueueFull,
 };
 

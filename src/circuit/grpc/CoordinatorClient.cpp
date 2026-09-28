@@ -76,6 +76,8 @@ const char* CommandBatchAdmissionStatusName(
 		return "invalid-batch-sequence";
 	case CommandBatchAdmissionStatus::kInvalidCorrelation:
 		return "invalid-correlation";
+	case CommandBatchAdmissionStatus::kDuplicate:
+		return "duplicate";
 	case CommandBatchAdmissionStatus::kQueueFull:
 		return "queue-full";
 	}
@@ -103,6 +105,8 @@ std::string NewChannelIncarnation(const std::string& plugin_id) {
 		return ::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ;
 	case CommandBatchAdmissionStatus::kInvalidCorrelation:
 		return ::highbar::v1::MISSING_CLIENT_COMMAND_ID;
+	case CommandBatchAdmissionStatus::kDuplicate:
+		return ::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ;
 	case CommandBatchAdmissionStatus::kQueueFull:
 		return ::highbar::v1::QUEUE_FULL;
 	case CommandBatchAdmissionStatus::kAccepted:
@@ -164,6 +168,9 @@ CoordinatorClient::~CoordinatorClient() {
 void CoordinatorClient::StartLiveChannels(CommandQueue* sink, LiveControlState* state) {
 	if (sink == nullptr || state == nullptr || live_control_thread_.joinable()) return;
 	live_state_ = state;
+	state->ReplaceChannels(
+		NewChannelIncarnation(plugin_id_ + "-live-command"),
+		NewChannelIncarnation(plugin_id_ + "-live-control"));
 	live_control_thread_ = std::thread(&CoordinatorClient::LiveControlReaderLoop, this, state);
 	live_command_thread_ = std::thread(&CoordinatorClient::LiveCommandReaderLoop, this, sink, state);
 	live_report_thread_ = std::thread(&CoordinatorClient::LiveReportWorkerLoop, this);
@@ -207,6 +214,17 @@ void CoordinatorClient::LiveControlReaderLoop(LiveControlState* state) {
 		}
 		{
 			std::lock_guard<std::mutex> lock(live_context_mutex_); live_control_ctx_.reset();
+		}
+		if (!live_stopping_.load(std::memory_order_acquire)) {
+			// Losing the priority stream immediately invalidates its authority
+			// generation. Rotate both paired incarnations before backoff and
+			// cancel the gameplay stream so no old-binding work can arrive or
+			// dispatch while the replacement control stream is pending.
+			state->ReplaceChannels(
+				NewChannelIncarnation(plugin_id_ + "-live-command"),
+				NewChannelIncarnation(plugin_id_ + "-live-control"));
+			std::lock_guard<std::mutex> lock(live_context_mutex_);
+			if (live_command_ctx_) live_command_ctx_->TryCancel();
 		}
 		for (std::uint32_t elapsed=0; elapsed<backoff_ms && !live_stopping_.load(); elapsed+=50)
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));

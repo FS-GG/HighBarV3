@@ -33,14 +33,17 @@ public:
 	                 std::string match_incarnation,
 	                 std::string state_channel_incarnation,
 	                 std::string command_channel_incarnation,
-	                 std::string control_channel_incarnation);
+	                 std::string control_channel_incarnation,
+	                 std::size_t max_reported_units = 64);
 
 	const std::string& PluginId() const { return plugin_id_; }
 	const std::string& ProcessIncarnation() const { return process_incarnation_; }
 	const std::string& MatchIncarnation() const { return match_incarnation_; }
 	const std::string& StateChannelIncarnation() const { return state_channel_incarnation_; }
-	const std::string& CommandChannelIncarnation() const { return command_channel_incarnation_; }
-	const std::string& ControlChannelIncarnation() const { return control_channel_incarnation_; }
+	std::string CommandChannelIncarnation() const;
+	std::string ControlChannelIncarnation() const;
+	void ReplaceChannels(std::string command_channel_incarnation,
+	                     std::string control_channel_incarnation);
 
 	::highbar::v1::LiveControlAckReport ApplyDirective(
 		const ::highbar::v1::LiveControlDirective& directive,
@@ -55,6 +58,8 @@ public:
 		const QueuedCommand& command,
 		const std::function<bool()>& dispatch,
 		Clock::time_point now = Clock::now()) const;
+	bool LegacyGameplayAllowed() const;
+	bool DispatchLegacyGuarded(const std::function<bool()>& dispatch) const;
 
 	std::uint64_t MarkOwnedPresent(std::uint32_t id);
 	void MarkOwnedRemoved(std::uint32_t id);
@@ -68,14 +73,24 @@ public:
 	::highbar::v1::NativeObservationBasis RecordBasis(
 		std::uint64_t state_sequence, std::uint32_t frame,
 		std::uint64_t snapshot_send_monotonic_ns,
-		std::uint32_t effective_cadence_frames);
+		std::uint32_t effective_cadence_frames,
+		std::chrono::milliseconds maximum_age,
+		Clock::time_point emitted_at = Clock::now());
 	bool BasisKnown(const ::highbar::v1::NativeObservationBasis& basis) const;
-	std::vector<::highbar::v1::NativeLiveUnitMetadata> SnapshotUnitMetadata(
-		std::size_t maximum) const;
+	std::optional<Clock::time_point> BasisExpiry(
+		const ::highbar::v1::NativeObservationBasis& basis) const;
+	std::optional<std::vector<::highbar::v1::NativeLiveUnitMetadata>>
+	SnapshotUnitMetadata();
+	bool LiveBatchFresh(const ::highbar::v1::LiveCommandBatch& batch) const;
+	void RememberLiveBatch(const ::highbar::v1::LiveCommandBatch& batch);
 
 private:
 	struct UnitLife { std::uint64_t lifetime = 0; bool present = false; bool visual = false; };
-	struct BasisEntry { ::highbar::v1::NativeObservationBasis basis; };
+	struct BasisEntry {
+		::highbar::v1::NativeObservationBasis basis;
+		Clock::time_point emitted_at;
+		Clock::time_point expires_at;
+	};
 
 	bool BindingMatchesLocal(const ::highbar::v1::LiveBinding& binding) const;
 	bool BindingEquals(const ::highbar::v1::LiveBinding& a,
@@ -94,10 +109,13 @@ private:
 	std::optional<::highbar::v1::LiveBinding> binding_;
 	std::uint64_t control_sequence_ = 0;
 	bool revoked_ = true;
+	bool live_session_engaged_ = false;
 	Clock::time_point lease_deadline_{};
+	std::size_t max_reported_units_ = 64;
 	std::unordered_map<std::uint32_t, UnitLife> owned_;
 	std::unordered_map<std::uint32_t, UnitLife> enemies_;
 	std::unordered_map<std::uint64_t, BasisEntry> bases_;
+	std::unordered_map<std::string, std::uint64_t> admitted_live_batches_;
 	static constexpr std::size_t kMaxBases = 256;
 };
 
