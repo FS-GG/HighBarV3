@@ -60,6 +60,17 @@ coordinator still returns only an accepted-batch count from `SubmitCommands`;
 no structured `CommandBatchResult` was observed, so end-to-end typed result
 correlation and the full BARC-01.2 milestone remain unproven.
 
+A further bounded run printed the actual `CommandAck`: `accepted=1 results=0`
+while the same 490.4-elmo engine movement still passed. The reason is in the
+client-mode route: `coordinator.proto` defines `OpenCommandChannel` as a
+server stream of `CommandBatch` only; `CoordinatorClient.cpp` logs native
+admission locally and has no result return RPC. The Python example
+coordinator's `SubmitCommands` immediately returns aggregate counters and
+never populates `CommandAck.results`. The separate plugin-hosted
+`HighBarService.cpp` path does populate structured results, but that is not
+the coordinator route used here. A return path for native admission and
+dispatch results, with correlation preserved, remains future work.
+
 Local raw logs are under `/tmp/barc-native-assets/us1-run2/`,
 `/tmp/barc-native-assets/move-run2/`, and
 `/tmp/barc-native-assets/move-run3/`; the accepted batch and engine effect
@@ -67,3 +78,5 @@ are in `/tmp/barc-native-assets/coordinator-move-trace3.log` and
 `move-run3/behavioral-move.log`. These are ephemeral evidence paths, not
 repository fixtures. The BAR test game also emitted Lua feature definition
 and headless rendering errors while the engine continued to advance frames.
+The confirming aggregate-only ACK is in
+`/tmp/barc-native-assets/move-run4/behavioral-move.log`.

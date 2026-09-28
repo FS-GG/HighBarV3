@@ -208,7 +208,7 @@ def gen():
 
 ack = stub.SubmitCommands(gen(), timeout=10)
 print(f"[bmove] dispatched MoveUnit to ({px+500:.1f}, {py:.1f}, {pz:.1f}) "
-      f"accepted={ack.batches_accepted}", flush=True)
+      f"accepted={ack.batches_accepted} results={len(ack.results)}", flush=True)
 
 # Wait 120 engine frames (~4s wall clock at 30fps).
 target_frame = before_snap.frame_number + 120
