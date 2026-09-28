@@ -53,6 +53,7 @@ class RingBuffer;
 class CommandQueue;
 class OrderStateTracker;
 class CoordinatorClient;
+class LiveControlState;
 }  // namespace circuit::grpc
 
 namespace circuit {
@@ -220,6 +221,7 @@ private:
 	std::unique_ptr<grpc::RingBuffer> ring_;
 	std::unique_ptr<grpc::CommandQueue> command_queue_;
 	std::unique_ptr<grpc::OrderStateTracker> order_state_tracker_;
+	std::unique_ptr<grpc::LiveControlState> live_control_state_;
 	std::unique_ptr<grpc::HighBarService> service_;
 	std::optional<grpc::TransportEndpoint> deferred_service_bind_endpoint_;
 	bool service_bound_ = false;
@@ -234,6 +236,8 @@ private:
 	bool coordinator_initial_snapshot_sent_ = false;
 	static constexpr std::uint32_t kHeartbeatEveryNFrames = 30;
 	std::uint32_t frame_counter_ = 0;
+	std::uint32_t live_max_observation_age_ms_ = 2000;
+	std::uint32_t live_max_reported_units_ = 64;
 
 	std::string bound_address_;
 

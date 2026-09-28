@@ -16,6 +16,7 @@
 #include "spring/SpringCallback.h"
 #include "resource/MetalManager.h"
 #include "terrain/TerrainManager.h"
+#include "spring/SpringMap.h"
 #include "unit/CircuitUnit.h"
 #include "unit/enemy/EnemyInfo.h"
 #include "unit/enemy/EnemyManager.h"
@@ -191,14 +192,10 @@ void SnapshotBuilder::FillStaticMap(::highbar::v1::StaticMap* out) const {
 			v->set_z(spot.position.z);
 		}
 	}
-	// width_cells / height_cells / heightmap / start_positions come
-	// from CTerrainManager / CMap. BARb's accessors for these exist
-	// but their exact names weren't verified during this session.
-	// The StaticMap fields are zeroed — clients see width=0 height=0
-	// and skip map-bound rendering. US1 wires the terrain bits once
-	// the accessors are confirmed.
-	out->set_width_cells(0);
-	out->set_height_cells(0);
+	if (auto* map = ai_->GetMap()) {
+		out->set_width_cells(static_cast<std::uint32_t>(map->GetWidth()));
+		out->set_height_cells(static_cast<std::uint32_t>(map->GetHeight()));
+	}
 }
 
 }  // namespace circuit::grpc

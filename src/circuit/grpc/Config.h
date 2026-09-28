@@ -33,6 +33,14 @@ struct SnapshotTickSettings {
 	std::uint32_t snapshot_max_units      = 1000;
 };
 
+struct LiveControlSettings {
+	// Producer-advertised native age policy. 2000ms is the existing
+	// qualified normal-load snapshot max-gap; tighter settings require their
+	// own runtime qualification.
+	std::uint32_t max_observation_age_ms = 2000;
+	std::uint32_t max_reported_units = 64;
+};
+
 struct CommandValidationConfig {
 	std::string mode = "compatibility";  // compatibility | warning-only | strict
 	bool strict = false;
@@ -79,6 +87,7 @@ struct TransportEndpoint {
 	// 003-snapshot-arm-coverage — periodic snapshot tick config. See
 	// SnapshotTickSettings for defaults + validation.
 	SnapshotTickSettings snapshot_tick;
+	LiveControlSettings live_control;
 
 	CommandValidationConfig command_validation;
 };

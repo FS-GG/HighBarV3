@@ -43,11 +43,42 @@ end
 
 local spawnedByAiTeam = {}
 local adminFixtureSeeded = false
+local barcLiveFixtureSeeded = false
 
 local function adminFixtureEnabled()
   local options = Spring.GetModOptions() or {}
   local value = options.highbar_admin_behavior_fixture
   return value == true or value == "1" or value == 1
+end
+
+local function barcLiveFixtureEnabled()
+  local options = Spring.GetModOptions() or {}
+  local value = options.highbar_barc_live_fixture
+  return value == true or value == "1" or value == 1
+end
+
+local function seedBarcLiveFixture()
+  if barcLiveFixtureSeeded or not barcLiveFixtureEnabled() then
+    return
+  end
+  barcLiveFixtureSeeded = true
+  local teams = {}
+  local gaiaTeam = Spring.GetGaiaTeamID()
+  for _, teamID in ipairs(Spring.GetTeamList()) do
+    if teamID ~= gaiaTeam then teams[#teams + 1] = teamID end
+  end
+  if #teams < 2 then return end
+  local x, z = 2048, 2048
+  local actor = Spring.CreateUnit("armflea", x, Spring.GetGroundHeight(x, z), z, "east", teams[1])
+  local targetX = x + 120
+  local target = Spring.CreateUnit("corak", targetX, Spring.GetGroundHeight(targetX, z), z, "west", teams[2])
+  for _, unitID in ipairs({actor, target}) do
+    if unitID then
+      Spring.GiveOrderToUnit(unitID, CMD.STOP, {}, {})
+      Spring.GiveOrderToUnit(unitID, CMD.FIRE_STATE, {0}, {})
+    end
+  end
+  Spring.Echo(string.format("highbar_barc_live_fixture actor=%s target=%s", tostring(actor), tostring(target)))
 end
 
 local function teamStartPosition(teamID, fallbackIndex)
@@ -181,11 +212,15 @@ end
 
 function gadget:GameStart()
   seedAdminBehaviorFixture()
+  seedBarcLiveFixture()
 end
 
 function gadget:GameFrame(frame)
   if frame == 0 then
     seedAdminBehaviorFixture()
+  end
+  if frame == 1 then
+    seedBarcLiveFixture()
   end
 end
 

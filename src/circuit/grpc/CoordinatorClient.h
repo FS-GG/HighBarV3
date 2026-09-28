@@ -10,6 +10,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "highbar/coordinator.grpc.pb.h"
+#include "highbar/live_control.grpc.pb.h"
 #include "highbar/state.pb.h"
 #include "highbar/commands.pb.h"
 
@@ -28,6 +29,7 @@ class CCircuitAI;
 namespace circuit::grpc {
 
 class CommandQueue;
+class LiveControlState;
 
 class CoordinatorClient {
 public:
@@ -58,6 +60,9 @@ public:
 	// to the engine-thread CommandQueue. DrainCommandQueue picks commands
 	// up at the top of each frame tick.
 	void StartCommandChannel(CommandQueue* sink);
+	void StartLiveChannels(CommandQueue* sink, LiveControlState* live_state);
+	void ReportLiveCapabilities(const ::highbar::v1::LiveNativeCapabilities& capabilities);
+	void ReportLiveSnapshot(const ::highbar::v1::LiveSnapshotMetadata& snapshot);
 
 	bool IsConnected() const { return connected_.load(std::memory_order_acquire); }
 	std::uint64_t OkCount() const { return ok_count_.load(std::memory_order_acquire); }
@@ -112,6 +117,27 @@ private:
 	std::atomic<std::uint64_t> cmd_batches_rejected_invalid_{0};
 	std::atomic<std::uint64_t> cmd_batches_rejected_full_{0};
 	std::atomic<std::uint64_t> cmd_commands_received_{0};
+
+	void LiveControlReaderLoop(LiveControlState* state);
+	void LiveCommandReaderLoop(CommandQueue* sink, LiveControlState* state);
+	void LiveReportWorkerLoop();
+	bool SendLiveControlAck(const ::highbar::v1::LiveControlAckReport& report);
+	void QueueLiveStateReport(::highbar::v1::LiveStateReport report);
+	std::shared_ptr<::grpc::Channel> live_channel_;
+	std::unique_ptr<::highbar::v1::HighBarLiveControl::Stub> live_stub_;
+	std::thread live_control_thread_;
+	std::thread live_command_thread_;
+	std::thread live_report_thread_;
+	std::atomic<bool> live_stopping_{false};
+	std::mutex live_context_mutex_;
+	std::shared_ptr<::grpc::ClientContext> live_control_ctx_;
+	std::shared_ptr<::grpc::ClientContext> live_command_ctx_;
+	std::mutex live_report_mutex_;
+	std::condition_variable live_report_cv_;
+	std::deque<::highbar::v1::LiveStateReport> live_reports_;
+	std::atomic<std::uint64_t> live_report_sequence_{0};
+	LiveControlState* live_state_ = nullptr;
+	static constexpr std::size_t kMaxQueuedLiveReports = 64;
 };
 
 }  // namespace circuit::grpc
