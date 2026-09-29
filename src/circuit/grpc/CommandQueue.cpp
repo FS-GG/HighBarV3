@@ -250,7 +250,16 @@ CommandBatchResult AdmitLiveCommandBatch(
 			&& cmd.build_unit().options() == policy_options(live.tactical_command().factory_produce().queue_policy());
 		break;
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_SET_RALLY:
-		semantic_ok = false;  // installed engine cannot observe factory rally queue
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case()
+				== ::highbar::v1::NativeTacticalCommand::kSetRally
+			&& live.tactical_command().queue_domain()
+				== ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY
+			&& cmd.command_case() == ::highbar::v1::AICommand::kMoveUnit
+			&& actor_matches(cmd.move_unit().unit_id())
+			&& cmd.move_unit().options() == 0
+			&& same_position(cmd.move_unit().to_position(),
+				live.tactical_command().set_rally().position());
 		break;
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_QUEUE_EDIT:
 		if (live.has_tactical_command()

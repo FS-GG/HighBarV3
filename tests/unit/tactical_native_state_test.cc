@@ -8,6 +8,25 @@
 namespace {
 using namespace circuit::grpc;
 
+TEST(TacticalNativeState, RallyQueueApiRequiresExactPreexistingVersionIdentity) {
+	EXPECT_TRUE(SupportsRallyQueueApi(
+		kRallyQueueEngineHash, kRallyQueueEngineBranch,
+		kRallyQueueEngineAdditional));
+	EXPECT_FALSE(SupportsRallyQueueApi(
+		"7555c82", kRallyQueueEngineBranch, kRallyQueueEngineAdditional));
+	EXPECT_FALSE(SupportsRallyQueueApi(
+		kRallyQueueEngineHash, "master", kRallyQueueEngineAdditional));
+	EXPECT_FALSE(SupportsRallyQueueApi(
+		kRallyQueueEngineHash, kRallyQueueEngineBranch, ""));
+	EXPECT_FALSE(SupportsRallyQueueApi(nullptr, nullptr, nullptr));
+}
+
+TEST(TacticalNativeState, EmptyQueueIsACompleteRevisionNotUnavailable) {
+	const auto empty = MakeNativeQueueSnapshot({});
+	EXPECT_NE(empty.revision, 0u);
+	EXPECT_TRUE(empty.entries.empty());
+}
+
 TEST(TacticalNativeState, QueueRevisionCoversOrderTagsOptionsTimeoutAndFloatBits) {
 	NativeQueueEntry first{1, 10, 0, 41, 900, {1.0f, -0.0f}};
 	NativeQueueEntry second{1, 20, 32, 42, 901, {2.0f}};

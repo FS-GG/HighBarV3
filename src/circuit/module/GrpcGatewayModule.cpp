@@ -31,6 +31,7 @@
 #include "unit/CircuitDef.h"
 #include "unit/enemy/EnemyInfo.h"
 #include "spring/SpringMap.h"
+#include "spring/SpringEngine.h"
 #include "util/FileSystem.h"
 #include "util/Utils.h"
 
@@ -41,6 +42,7 @@
 #include <Lua.h>
 #include <Resource.h>
 #include <Unit.h>
+#include <CurrentCommandByType.h>
 #include <UnitDef.h>
 #include <Feature.h>
 #include <FeatureDef.h>
@@ -118,12 +120,6 @@ std::string Sha256(const std::string& input) {
 		for(int i=0;i<64;++i){auto s1=rotr(e,6)^rotr(e,11)^rotr(e,25);auto ch=(e&f)^((~e)&g);auto t1=hh+s1+ch+k[i]+w[i];auto s0=rotr(a,2)^rotr(a,13)^rotr(a,22);auto maj=(a&b)^(a&c)^(b&c);auto t2=s0+maj;hh=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}
 		h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=hh;}
 	std::string out(32,'\0'); for(int i=0;i<8;++i)for(int j=0;j<4;++j)out[i*4+j]=static_cast<char>(h[i]>>(24-j*8)); return out;
-}
-
-::highbar::v1::NativeQueueDomain QueueDomain(int type, bool factory) {
-	if (!factory) return ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER;
-	return type == 2 ? ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
-	                 : ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY;
 }
 
 ::highbar::v1::LiveSemanticAction QueueAction(int command_id) {
@@ -655,6 +651,12 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	snapshot.set_catalogue_revision(tactical_catalogue_revision_);
 	auto* callback = circuit->GetCallback();
 	if (callback == nullptr) return;
+	// All three calls below predate the appended rally callbacks. Do not read
+	// an appended callback-table field until this exact identity is established.
+	auto* engine = circuit->GetEngine();
+	const bool rally_api_available = engine != nullptr
+		&& grpc::SupportsRallyQueueApi(engine->GetVersionHash(),
+			engine->GetVersionBranch(), engine->GetVersionAdditional());
 	auto* economy_manager = circuit->GetEconomyManager();
 	std::unique_ptr<springai::Economy> economy(callback->GetEconomy());
 	auto* econ = snapshot.mutable_economy();
@@ -748,20 +750,102 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			}
 		}
 		utils::free_clear(supported);
+		std::optional<std::vector<grpc::NativeQueueEntry>> ordinary_entries;
+		std::optional<std::vector<grpc::NativeQueueEntry>> production_entries;
+		std::optional<std::vector<grpc::NativeQueueEntry>> rally_entries;
+		auto read_typed_queue = [&](int queue_type)
+				-> std::optional<std::vector<grpc::NativeQueueEntry>> {
+			if (!rally_api_available) return std::nullopt;
+			std::vector<springai::CurrentCommandByType*> commands;
+			try {
+				// Safe only after the exact old-field version gate above.
+				commands = unit->GetCurrentCommandsByType(queue_type);
+				if (commands.size() > kTacticalMaxQueueEntries) {
+					utils::free_clear(commands);
+					return std::nullopt;
+				}
+				std::vector<grpc::NativeQueueEntry> entries;
+				entries.reserve(commands.size());
+				for (auto* command : commands) {
+					if (command == nullptr) {
+						utils::free_clear(commands);
+						return std::nullopt;
+					}
+					entries.push_back({command->GetType(), command->GetId(),
+						static_cast<std::uint16_t>(command->GetOptions()),
+						command->GetTag(), command->GetTimeOut(), command->GetParams()});
+				}
+				utils::free_clear(commands);
+				return entries;
+			} catch (...) {
+				utils::free_clear(commands);
+				return std::nullopt;
+			}
+		};
+		if (rally_api_available) {
+			if (factory) {
+				production_entries = read_typed_queue(2);
+				rally_entries = read_typed_queue(1);
+			} else {
+				ordinary_entries = read_typed_queue(0);
+			}
+		} else {
+			// Legacy engines can still report their historical ordinary/production
+			// queue. Rally remains explicitly unavailable, and no appended field
+			// has been accessed.
+			auto commands = unit->GetCurrentCommands();
+			if (commands.size() <= kTacticalMaxQueueEntries) {
+				std::vector<grpc::NativeQueueEntry> entries;
+				entries.reserve(commands.size());
+				for (auto* command : commands) if (command != nullptr)
+					entries.push_back({command->GetType(), command->GetId(),
+						static_cast<std::uint16_t>(command->GetOptions()), command->GetTag(),
+						command->GetTimeOut(), command->GetParams()});
+				if (factory) production_entries = std::move(entries);
+				else ordinary_entries = std::move(entries);
+			}
+			utils::free_clear(commands);
+		}
+		if (factory && rally_entries.has_value()) {
+			auto* rally_descriptor = descriptor_for(
+				::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY);
+			if (rally_descriptor == nullptr) descriptor_overflow = true;
+		}
 		if (descriptor_overflow) return;
 		for (auto& value : *actor_out->mutable_descriptors())
 			std::sort(value.mutable_allowed_definition_ids()->begin(),value.mutable_allowed_definition_ids()->end());
 		std::sort(actor_out->mutable_descriptors()->begin(),actor_out->mutable_descriptors()->end(),[](const auto& a,const auto& b){return a.kind()<b.kind();});
 		std::string descriptor_bytes;for(const auto& d:actor_out->descriptors())descriptor_bytes+=d.SerializeAsString();actor_out->set_descriptor_revision(StableRevision(descriptor_bytes));
-		auto commands=unit->GetCurrentCommands(); std::vector<grpc::NativeQueueEntry> native_entries;native_entries.reserve(commands.size());
-		for(auto* command:commands)if(command!=nullptr)native_entries.push_back({command->GetType(),command->GetId(),static_cast<std::uint16_t>(command->GetOptions()),command->GetTag(),command->GetTimeOut(),command->GetParams()});
-		const int queue_type=commands.empty()? (factory?2:0) : commands.front()->GetType(); const auto domain=QueueDomain(queue_type,factory);
-		auto* queue=actor_out->add_queue();queue->set_domain(domain);queue->set_revision(grpc::ComputeNativeQueueRevision(native_entries));queue->set_complete(commands.size()<=kTacticalMaxQueueEntries);
-		if (repeat_mode.has_value()) queue->set_repeat(*repeat_mode);
-		for(std::size_t i=0;i<commands.size()&&i<kTacticalMaxQueueEntries;++i){auto* command=commands[i];if(command==nullptr)continue;auto* out=queue->add_entries();out->set_native_tag(command->GetTag());out->set_action(QueueAction(command->GetId()));
-			const auto params=command->GetParams();if(command->GetId()<0)out->set_definition_id(static_cast<std::uint32_t>(-command->GetId()));else if(command->GetId()==CMD_MOVE&&params.size()>=3){out->set_world_x(params[0]);out->set_world_z(params[2]);}}
-		utils::free_clear(commands);
-		if(factory){auto* rally=actor_out->add_queue();rally->set_domain(::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);rally->set_complete(false);}
+		auto append_queue = [&](::highbar::v1::NativeQueueDomain domain,
+			const std::optional<std::vector<grpc::NativeQueueEntry>>& entries,
+			bool include_repeat) {
+			auto* queue = actor_out->add_queue();
+			queue->set_domain(domain);
+			queue->set_complete(entries.has_value());
+			if (!entries.has_value()) return;
+			queue->set_revision(grpc::ComputeNativeQueueRevision(*entries));
+			if (include_repeat && repeat_mode.has_value()) queue->set_repeat(*repeat_mode);
+			for (const auto& command : *entries) {
+				auto* out = queue->add_entries();
+				out->set_native_tag(command.tag);
+				out->set_action(QueueAction(command.command_id));
+				if (command.command_id < 0)
+					out->set_definition_id(static_cast<std::uint32_t>(-command.command_id));
+				else if (command.command_id == CMD_MOVE && command.params.size() >= 3) {
+					out->set_world_x(command.params[0]);
+					out->set_world_z(command.params[2]);
+				}
+			}
+		};
+		if (factory) {
+			append_queue(::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION,
+				production_entries, true);
+			append_queue(::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY,
+				rally_entries, false);
+		} else {
+			append_queue(::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER,
+				ordinary_entries, true);
+		}
 	}
 	live_control_state_->RecordTacticalSnapshot(snapshot);
 	coordinator_client_->ReportTacticalSnapshot(snapshot);

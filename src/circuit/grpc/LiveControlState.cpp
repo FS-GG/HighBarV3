@@ -298,13 +298,18 @@ LiveFenceResult LiveControlState::CheckTacticalCommandLocked(
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimArea){const auto& body=command.reclaim_area();if(!finite_position(body.center())||!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>2048||!policy_ok(body.queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kFactoryProduce&&
 	   (command.factory_produce().count()!=1||!allowed_definition(command.factory_produce().definition_id())||!policy_ok(command.factory_produce().queue_policy())))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
-	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kSetRally)return {false,::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kSetRally
+	    && !finite_position(command.set_rally().position()))
+		return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kTacticalMode){const auto value=command.tactical_mode().value();const int expected=required==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY?34571:required==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE?37382:0;if(std::find(descriptor->allowed_mode_values().begin(),descriptor->allowed_mode_values().end(),value)==descriptor->allowed_mode_values().end()||!descriptor->has_native_command_id()||descriptor->native_command_id()!=expected)return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
 	if (command.action_case() == ::highbar::v1::NativeTacticalCommand::kQueueEdit) {
 		const auto& edit = command.queue_edit();
 		if (edit.domain() != command.queue_domain()
 		    || edit.expected_queue_revision() != command.expected_queue_revision())
 			return {false, ::highbar::v1::LIVE_FENCE_QUEUE_CHANGED};
+		if (edit.domain() == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY
+		    && edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT)
+			return {false, ::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
 		if (edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG
 		    || edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT) {
 			const auto tag = edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG

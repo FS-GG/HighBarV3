@@ -40,6 +40,14 @@ void AdvanceLifetime(std::uint64_t* lifetime) {
 
 }  // namespace
 
+bool SupportsRallyQueueApi(const char* hash, const char* branch,
+		const char* additional) {
+	return hash != nullptr && branch != nullptr && additional != nullptr
+		&& std::strcmp(hash, kRallyQueueEngineHash) == 0
+		&& std::strcmp(branch, kRallyQueueEngineBranch) == 0
+		&& std::strcmp(additional, kRallyQueueEngineAdditional) == 0;
+}
+
 FeatureLifetimeLedger::Entry* FeatureLifetimeLedger::Find(std::uint32_t id) {
 	for (auto& item : entries_) {
 		if (item.first == id) return &item.second;
