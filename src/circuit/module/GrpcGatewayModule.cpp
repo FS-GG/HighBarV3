@@ -22,6 +22,7 @@
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
 #include "grpc/TacticalCatalogueProjection.h"
+#include "module/TacticalSuppressionDiagnostic.h"
 #include "grpc/SchemaVersion.h"
 #include "grpc/SnapshotBuilder.h"
 #include "SpringHeadlessPin.h"  // T006 — kEngineReleaseId / kEngineSha256
@@ -158,6 +159,26 @@ void AppendCoordinatorTrace(const std::string& message) {
 	             static_cast<long long>(micros),
 	             message.c_str());
 	std::fclose(f);
+}
+
+bool CoordinatorTraceEnabled() {
+	const char* path = std::getenv("HIGHBAR_COORDINATOR_TRACE");
+	return path != nullptr && path[0] != '\0';
+}
+
+grpc::TacticalSuppressionTraceThrottle& TacticalSuppressionTraceThrottle() {
+	// At a six-frame cadence this emits an unchanged reminder roughly every
+	// 25 seconds, while changed reasons and counts remain immediate.
+	static grpc::TacticalSuppressionTraceThrottle throttle(128);
+	return throttle;
+}
+
+void TraceTacticalSuppression(
+		const grpc::TacticalSuppressionObservation& observation) {
+	if (!CoordinatorTraceEnabled()) return;
+	auto& throttle = TacticalSuppressionTraceThrottle();
+	if (throttle.ShouldEmit(observation))
+		AppendCoordinatorTrace(grpc::TacticalSuppressionTraceMessage(observation));
 }
 
 std::string GlobalSpeedLuaMessage(float speed) {
@@ -578,15 +599,36 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 }
 
 void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
-	if (!coordinator_client_ || !live_control_state_ || circuit == nullptr) return;
+	if (!coordinator_client_) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::CoordinatorClient, 0, 1});
+		return;
+	}
+	if (!live_control_state_) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::LiveControlState, 0, 1});
+		return;
+	}
+	if (circuit == nullptr) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::Circuit, 0, 1});
+		return;
+	}
 	auto* callback = circuit->GetCallback();
-	if (callback == nullptr) return;
+	if (callback == nullptr) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::Callback, 0, 1});
+		return;
+	}
 	auto definitions = callback->GetUnitDefs();
+	const std::size_t total_definitions = definitions.size();
 	std::sort(definitions.begin(), definitions.end(), [](auto* a, auto* b) {
 		return a != nullptr && (b == nullptr || a->GetUnitDefId() < b->GetUnitDefId());
 	});
 	const bool bounded = definitions.size() <= kTacticalMaxCatalogueEntries;
 	bool catalogue_valid = bounded;
+	std::size_t maximum_build_options = 0;
+	std::size_t oversized_definitions = 0;
 	std::vector<::highbar::v1::NativeUnitDefinition> native;
 	if (bounded) native.reserve(definitions.size());
 	auto* economy = circuit->GetEconomyManager();
@@ -608,13 +650,17 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 			if (energy != nullptr) { const float value=definition->GetCost(energy); if (std::isfinite(value)&&value>=0) cost->set_energy(value); }
 			const float build_time=definition->GetBuildTime(); if (std::isfinite(build_time)&&build_time>=0) cost->set_build_time(build_time);
 			auto options = definition->GetBuildOptions();
+			maximum_build_options = std::max(maximum_build_options, options.size());
 			std::sort(options.begin(), options.end(), [](auto* a, auto* b) {
 				return a != nullptr && (b == nullptr || a->GetUnitDefId() < b->GetUnitDefId());
 			});
 			if (options.size() <= kTacticalMaxBuildOptions) {
 				for (auto* option : options) if (option != nullptr && option->GetUnitDefId()>0)
 					out.add_build_option_definition_ids(static_cast<std::uint32_t>(option->GetUnitDefId()));
-			} else catalogue_valid = false;
+			} else {
+				catalogue_valid = false;
+				++oversized_definitions;
+			}
 			utils::free_clear(options);
 			native.push_back(std::move(out));
 		}
@@ -634,6 +680,15 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 	tactical_catalogue_id_ = content_hash.substr(0, 16);
 	tactical_catalogue_revision_ = StableRevision(content_hash + content_seed);
 	tactical_catalogue_complete_ = catalogue_valid && !native.empty();
+	TacticalSuppressionTraceThrottle().Reset();
+	if (CoordinatorTraceEnabled()) {
+		AppendCoordinatorTrace(
+			"tactical catalogue total=" + std::to_string(total_definitions)
+			+ " native=" + std::to_string(native.size())
+			+ " max_options=" + std::to_string(maximum_build_options)
+			+ " oversized=" + std::to_string(oversized_definitions)
+			+ " complete=" + std::to_string(tactical_catalogue_complete_));
+	}
 	live_control_state_->RecordTacticalCatalogue(
 		tactical_catalogue_id_, tactical_catalogue_revision_, tactical_catalogue_complete_);
 	const std::size_t page_count = std::max<std::size_t>(1, (native.size()+kTacticalPageEntries-1)/kTacticalPageEntries);
@@ -655,14 +710,36 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 
 void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		const ::highbar::v1::NativeObservationBasis& basis) {
-	if (!tactical_catalogue_complete_ || !coordinator_client_
-	    || !live_control_state_ || circuit == nullptr) return;
+	if (!tactical_catalogue_complete_) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::CatalogueIncomplete,
+			grpc::TacticalSuppressionSource::None, 0, 1});
+		return;
+	}
+	if (!coordinator_client_) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::CoordinatorClient, 0, 1});
+		return;
+	}
+	if (!live_control_state_) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::LiveControlState, 0, 1});
+		return;
+	}
+	if (circuit == nullptr) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::Circuit, 0, 1});
+		return;
+	}
 	::highbar::v1::TacticalSnapshotMetadata snapshot;
 	*snapshot.mutable_basis() = basis;
 	snapshot.set_catalogue_id(tactical_catalogue_id_);
 	snapshot.set_catalogue_revision(tactical_catalogue_revision_);
 	auto* callback = circuit->GetCallback();
-	if (callback == nullptr) return;
+	if (callback == nullptr) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
+			grpc::TacticalSuppressionSource::Callback, 0, 1});
+		return;
+	}
 	// Both calls below predate the appended rally callbacks. Do not read
 	// an appended callback-table field until this exact identity is established.
 	auto* engine = circuit->GetEngine();
@@ -690,7 +767,12 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	fill_resource(econ->mutable_energy(), economy_manager != nullptr ? economy_manager->GetEnergyRes() : nullptr);
 
 	auto features = callback->GetFeatures();
-	if (features.size() > kTacticalMaxFeatures) { utils::free_clear(features); return; }
+	if (grpc::TacticalCountExceedsLimit(features.size(), kTacticalMaxFeatures)) {
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureOverflow,
+			grpc::TacticalSuppressionSource::None, features.size(), kTacticalMaxFeatures});
+		utils::free_clear(features);
+		return;
+	}
 	if (!tactical_feature_lifetimes_) tactical_feature_lifetimes_ = std::make_unique<grpc::FeatureLifetimeLedger>();
 	std::vector<grpc::VisibleFeatureSample> feature_samples;
 	std::vector<float> feature_reclaim;
@@ -705,7 +787,10 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		delete def;
 	}
 	if (!tactical_feature_lifetimes_->ReplaceCompleteVisibleSnapshot(basis.state_sequence(), feature_samples)) {
-		utils::free_clear(features); return;
+		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureLedgerRejected,
+			grpc::TacticalSuppressionSource::None, feature_samples.size(), kTacticalMaxFeatures});
+		utils::free_clear(features);
+		return;
 	}
 	for (std::size_t i=0;i<feature_samples.size();++i) {
 		const auto& sample=feature_samples[i]; const auto ref=tactical_feature_lifetimes_->Reference(sample.id);
@@ -823,7 +908,13 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 				::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY);
 			if (rally_descriptor == nullptr) descriptor_overflow = true;
 		}
-		if (descriptor_overflow) return;
+		if (descriptor_overflow) {
+			TraceTacticalSuppression({grpc::TacticalSuppressionReason::DescriptorOverflow,
+				grpc::TacticalSuppressionSource::None,
+				static_cast<std::size_t>(actor_out->descriptors_size()) + 1,
+				kTacticalMaxDescriptors});
+			return;
+		}
 		for (auto& value : *actor_out->mutable_descriptors())
 			std::sort(value.mutable_allowed_definition_ids()->begin(),value.mutable_allowed_definition_ids()->end());
 		std::sort(actor_out->mutable_descriptors()->begin(),actor_out->mutable_descriptors()->end(),[](const auto& a,const auto& b){return a.kind()<b.kind();});
@@ -861,6 +952,7 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	}
 	live_control_state_->RecordTacticalSnapshot(snapshot);
 	coordinator_client_->ReportTacticalSnapshot(snapshot);
+	TacticalSuppressionTraceThrottle().Reset();
 }
 
 void CGrpcGatewayModule::MaybeEmitInitialCoordinatorSnapshot(const char* reason) {
