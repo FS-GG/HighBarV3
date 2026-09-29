@@ -26,7 +26,13 @@ Recipe SHA-256:
   ed347949b87a317f170c863446a3434170208ec23d93fc6206f5380371926b4c  recoil-rally-api.patch
   bf7c2bd51d271ac9c91687b91d537ba87a2028d4fbe1d9f134c03031cd2442e6  submodules.txt
   69ee27d832962c74723e05d89e49f8e68602065ade662fa6879eca67a0f5a4c4  gcc16-rmlui.cmake
-  f0d9aa07a92c6775fdc50ec7f87303343c36fb708998e0343366ae9d0dc093b4  scripts/build-barc-recoil-rally.sh
+  d131a42e67d32e2891583c850c76a74d8bf81d782b9b4d5ebddc5cdad5d2f837  scripts/build-barc-recoil-rally.sh
+
+Reproduction identity check:
+  A fresh local clone was detached at the recorded base, the patch was applied
+  with `git apply --index`, and `git commit-tree` was given the recorded parent,
+  tree, message, author, and timestamps. It reproduced the full commit exactly:
+  7555c836e0457b04100b20149497d088dd9c2ca7
 
 Read-only loader qualification:
   SDL2 package URL: https://archive.archlinux.org/packages/s/sdl2/sdl2-2.30.9-1-x86_64.pkg.tar.zst

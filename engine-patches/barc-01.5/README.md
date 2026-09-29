@@ -11,8 +11,11 @@ BARC-01.5 producer rally work.
 - Patch: `recoil-rally-api.patch`
 - Recursive submodule pins: `submodules.txt`
 
-The local implementation commit is an audit identity. Reproduction starts at
-the upstream base and applies the patch, as the build script does.
+Reproduction starts at the upstream base and applies the patch to the index.
+The build script then recreates the recorded commit object from its exact tree,
+parent, message, author, and timestamp, verifies the resulting full hash, and
+checks it out before configuring. Reproduced binaries therefore carry the same
+safe version identity required by consumers rather than a dirty-base identity.
 
 ## Callback contract
 

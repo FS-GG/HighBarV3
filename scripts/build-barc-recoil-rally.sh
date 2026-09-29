@@ -13,6 +13,7 @@ repo_dir=$(cd -- "${script_dir}/.." && pwd)
 patch_file="${repo_dir}/engine-patches/barc-01.5/recoil-rally-api.patch"
 compat_file="${repo_dir}/engine-patches/barc-01.5/gcc16-rmlui.cmake"
 base_commit=2639eedac7d1fd67d793ec93ebd27f014f336a14
+patched_commit=7555c836e0457b04100b20149497d088dd9c2ca7
 cmake_bin=${BARC_CMAKE_BIN:-/tmp/barc-native-assets/pydeps/cmake/data/bin/cmake}
 sysroot=${BARC_SYSROOT:-/tmp/barc-native-assets/sysroot/usr}
 
@@ -25,8 +26,25 @@ if [[ -n $(git -C "${source_dir}" status --porcelain --untracked-files=no --igno
   exit 1
 fi
 
-git -C "${source_dir}" apply --check "${patch_file}"
-git -C "${source_dir}" apply "${patch_file}"
+git -C "${source_dir}" apply --check --index "${patch_file}"
+git -C "${source_dir}" apply --index "${patch_file}"
+
+patched_tree=$(git -C "${source_dir}" write-tree)
+recreated_commit=$(
+  printf '%s\n' 'externalai: expose typed command queues' |
+    GIT_AUTHOR_NAME=EHotwagner \
+    GIT_AUTHOR_EMAIL=ehotwagner@gmail.com \
+    GIT_AUTHOR_DATE='1790660348 +0200' \
+    GIT_COMMITTER_NAME=EHotwagner \
+    GIT_COMMITTER_EMAIL=ehotwagner@gmail.com \
+    GIT_COMMITTER_DATE='1790660348 +0200' \
+    git -C "${source_dir}" commit-tree "${patched_tree}" -p "${base_commit}"
+)
+if [[ ${recreated_commit} != "${patched_commit}" ]]; then
+  echo "Recreated Recoil commit ${recreated_commit} does not match ${patched_commit}" >&2
+  exit 1
+fi
+git -C "${source_dir}" checkout --detach "${patched_commit}"
 git -C "${source_dir}" submodule update --init --recursive
 
 "${cmake_bin}" -S "${source_dir}" -B "${build_dir}" -G Ninja \
