@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace circuit::grpc {
+
+// Engine-neutral projections of the Spring command and feature callbacks.
+// Keeping these types independent of protobuf lets the engine thread take one
+// coherent sample before a wire representation is selected.
+struct NativeQueueEntry {
+	std::int32_t type = 0;
+	std::int32_t command_id = 0;
+	std::uint16_t options = 0;
+	std::int32_t tag = 0;
+	std::int32_t timeout = 0;
+	std::vector<float> params;
+};
+
+struct NativeQueueSnapshot {
+	std::uint64_t revision = 0;
+	std::vector<NativeQueueEntry> entries;
+};
+
+std::uint64_t ComputeNativeQueueRevision(
+	const std::vector<NativeQueueEntry>& entries);
+
+NativeQueueSnapshot MakeNativeQueueSnapshot(
+	std::vector<NativeQueueEntry> entries);
+
+// A tag is actionable only in the exact queue revision in which it was
+// observed. Spring tags are the mutation identity; positions are not stable.
+bool HasNativeQueueTag(const NativeQueueSnapshot& snapshot,
+	std::uint64_t expected_revision, std::int32_t tag);
+
+struct VisibleFeatureSample {
+	std::uint32_t id = 0;
+	std::uint32_t def_id = 0;
+	float x = 0.0f;
+	float y = 0.0f;
+	float z = 0.0f;
+};
+
+struct NativeFeatureReference {
+	std::uint32_t id = 0;
+	std::uint64_t lifetime = 0;
+	std::uint32_t def_id = 0;
+	std::uint64_t observed_state_sequence = 0;
+};
+
+// Feature ids can be reused and the AI callback exposes only currently visible
+// features. An absence in a complete visible snapshot ends the old lifetime;
+// a later observation starts a new one. A definition change is also a new
+// lifetime. This is deliberately conservative for final-dispatch fencing.
+class FeatureLifetimeLedger {
+public:
+	bool ReplaceCompleteVisibleSnapshot(
+		std::uint64_t state_sequence,
+		const std::vector<VisibleFeatureSample>& features);
+	void MarkDestroyed(std::uint32_t id);
+
+	std::optional<NativeFeatureReference> Reference(std::uint32_t id) const;
+	bool Matches(const NativeFeatureReference& reference,
+		const VisibleFeatureSample& current) const;
+
+private:
+	struct Entry {
+		std::uint64_t lifetime = 0;
+		std::uint32_t def_id = 0;
+		std::uint64_t observed_state_sequence = 0;
+		bool visible = false;
+	};
+	Entry* Find(std::uint32_t id);
+	const Entry* Find(std::uint32_t id) const;
+	std::vector<std::pair<std::uint32_t, Entry>> entries_;
+	std::uint64_t last_complete_state_sequence_ = 0;
+};
+
+}  // namespace circuit::grpc
