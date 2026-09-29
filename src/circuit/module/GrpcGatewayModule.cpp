@@ -436,7 +436,7 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 		coordinator_engine_sha256_);
 	const auto identity_seed = coordinator_plugin_id_ + "-" + std::to_string(NowMicros());
 	live_control_state_ = std::make_unique<grpc::LiveControlState>(
-		coordinator_plugin_id_, identity_seed + "-process", identity_seed + "-match",
+		coordinator_plugin_id_, identity_seed + "-process", grpc::LiveControlState::NewMatchIncarnation(),
 		identity_seed + "-state", identity_seed + "-command", identity_seed + "-control",
 		live_max_reported_units_);
 	for (const auto& [id, unit] : circuit->GetTeamUnits()) {
@@ -467,6 +467,19 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	capabilities.set_terrain_elevation_available(false);
 	capabilities.set_supports_stop(true); capabilities.set_supports_move(true);
 	capabilities.set_supports_attack_visible_unit(true); capabilities.set_max_reported_units(live_max_reported_units_);
+	AppendCoordinatorTrace(
+		"live capabilities report match_bytes=" + std::to_string(live_control_state_->MatchIncarnation().size())
+		+ " actors=" + std::to_string(capabilities.max_actor_count())
+		+ " batch=" + std::to_string(capabilities.max_batch_commands())
+		+ " max_unit=" + std::to_string(capabilities.max_native_unit_id())
+		+ " cadence=" + std::to_string(capabilities.snapshot_cadence_ceiling_frames())
+		+ " max_age_ms=" + std::to_string(capabilities.max_observation_age_ms())
+		+ " max_reported=" + std::to_string(capabilities.max_reported_units())
+		+ " map_cells=" + std::to_string(capabilities.map_width_cells()) + "x"
+		+ std::to_string(capabilities.map_height_cells())
+		+ " stop=" + std::to_string(capabilities.supports_stop())
+		+ " move=" + std::to_string(capabilities.supports_move())
+		+ " attack=" + std::to_string(capabilities.supports_attack_visible_unit()));
 	coordinator_client_->ReportLiveCapabilities(capabilities);
 }
 

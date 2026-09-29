@@ -3,10 +3,25 @@
 #include "grpc/CommandQueue.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <utility>
 
 namespace circuit::grpc {
+
+std::string LiveControlState::NewMatchIncarnation() {
+	static std::atomic<std::uint64_t> counter{0};
+	const auto wall = static_cast<std::uint64_t>(
+		std::chrono::system_clock::now().time_since_epoch().count());
+	const auto steady = static_cast<std::uint64_t>(
+		std::chrono::steady_clock::now().time_since_epoch().count())
+		^ (counter.fetch_add(1, std::memory_order_relaxed) + 1);
+	std::string value(16, '\0');
+	std::memcpy(value.data(), &wall, sizeof(wall));
+	std::memcpy(value.data() + sizeof(wall), &steady, sizeof(steady));
+	return value;
+}
 
 LiveControlState::LiveControlState(
 		std::string plugin_id, std::string process_incarnation,

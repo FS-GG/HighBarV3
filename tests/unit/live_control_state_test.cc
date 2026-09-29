@@ -9,11 +9,12 @@ namespace {
 using namespace circuit::grpc;
 using namespace highbar::v1;
 
-std::unique_ptr<LiveControlState> State() { return std::make_unique<LiveControlState>("p","proc","match","state","cmd","ctl"); }
+const std::string& Match() { static const std::string value(16, 'm'); return value; }
+std::unique_ptr<LiveControlState> State() { return std::make_unique<LiveControlState>("p","proc",Match(),"state","cmd","ctl"); }
 
 LiveBinding Binding(std::uint64_t epoch) {
 	LiveBinding b; b.set_plugin_id("p"); b.set_process_incarnation("proc");
-	b.set_match_incarnation("match"); b.set_command_channel_incarnation("cmd");
+	b.set_match_incarnation(Match()); b.set_command_channel_incarnation("cmd");
 	b.set_control_channel_incarnation("ctl"); b.set_broker_session_id("session");
 	b.set_controller_id("controller"); b.set_controller_incarnation("controller-1");
 	b.set_authority_epoch(epoch); b.set_module_sha256(std::string(32,'m')); b.set_module_generation(1);
@@ -37,6 +38,14 @@ TEST(LiveControlState, RevokeLinearizesWithoutEngineTickAndFencesSaturatedQueue)
 	auto fence=state->CheckAuthority(Binding(1),LiveControlState::Clock::time_point{});
 	EXPECT_FALSE(fence.ok); EXPECT_EQ(fence.reason,LIVE_FENCE_AUTHORITY_REVOKED);
 	EXPECT_EQ(queue.Depth(),2u); // acknowledgment does not need drain/purge.
+}
+
+TEST(LiveControlState, RuntimeMatchIncarnationsAreFreshOpaqueSixteenByteValues) {
+	const auto first = LiveControlState::NewMatchIncarnation();
+	const auto second = LiveControlState::NewMatchIncarnation();
+	EXPECT_EQ(first.size(), 16u);
+	EXPECT_EQ(second.size(), 16u);
+	EXPECT_NE(first, second);
 }
 
 TEST(LiveControlState, LifetimesChangeOnRemovalButVisibilityDoesNotChangeIdentity) {
@@ -191,7 +200,7 @@ TEST(LiveControlState, LegacyQueuedWorkIsFencedWhenLiveSessionEngages) {
 }
 
 TEST(LiveControlState, TotalOwnedAndVisualMetadataOverflowRefusesAuthority) {
-	auto state=std::make_unique<LiveControlState>("p","proc","match","state","cmd","ctl",2);
+	auto state=std::make_unique<LiveControlState>("p","proc",Match(),"state","cmd","ctl",2);
 	state->MarkOwnedPresent(0); state->MarkEnemyPresent(1,true); state->MarkEnemyPresent(2,true);
 	EXPECT_FALSE(state->SnapshotUnitMetadata().has_value());
 	EXPECT_EQ(Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1).disposition(),LIVE_CONTROL_ACK_REFUSED);

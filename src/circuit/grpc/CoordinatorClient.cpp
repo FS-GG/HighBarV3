@@ -84,6 +84,17 @@ const char* CommandBatchAdmissionStatusName(
 	return "unknown";
 }
 
+const char* LiveStateDispositionName(::highbar::v1::LiveStateReportDisposition disposition) {
+	switch (disposition) {
+	case ::highbar::v1::LIVE_STATE_REPORT_RECORDED: return "recorded";
+	case ::highbar::v1::LIVE_STATE_REPORT_DUPLICATE: return "duplicate";
+	case ::highbar::v1::LIVE_STATE_REPORT_STALE: return "stale";
+	case ::highbar::v1::LIVE_STATE_REPORT_REFUSED: return "refused";
+	case ::highbar::v1::LIVE_STATE_REPORT_DISPOSITION_UNSPECIFIED: return "unspecified";
+	default: return "unknown";
+	}
+}
+
 std::string NewChannelIncarnation(const std::string& plugin_id) {
 	static std::atomic<std::uint64_t> counter{0};
 	const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -319,7 +330,17 @@ void CoordinatorClient::LiveReportWorkerLoop() {
 			::grpc::ClientContext ctx; ctx.set_deadline(std::chrono::system_clock::now()+std::chrono::milliseconds(750));
 			::highbar::v1::LiveStateReportAck ack;
 			const auto status = live_stub_->ReportLiveState(&ctx, report, &ack);
-			if (status.ok()) break;
+			if (status.ok()) {
+				AppendCoordinatorTrace(plugin_id_,
+					"live state ack seq=" + std::to_string(ack.report_sequence())
+					+ " disposition=" + LiveStateDispositionName(ack.disposition())
+					+ " body=" + std::to_string(static_cast<int>(report.body_case())));
+				break;
+			}
+			AppendCoordinatorTrace(plugin_id_,
+				"live state rpc failed seq=" + std::to_string(report.report_sequence())
+				+ " code=" + std::to_string(status.error_code())
+				+ " msg=" + status.error_message());
 			for (std::uint32_t elapsed=0; elapsed<backoff_ms && !live_stopping_.load(); elapsed+=50)
 				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			backoff_ms=std::min<std::uint32_t>(backoff_ms*2,5000);

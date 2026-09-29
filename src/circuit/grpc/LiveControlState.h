@@ -27,6 +27,7 @@ struct LiveFenceResult {
 class LiveControlState {
 public:
 	using Clock = std::chrono::steady_clock;
+	static std::string NewMatchIncarnation();
 
 	LiveControlState(std::string plugin_id,
 	                 std::string process_incarnation,
