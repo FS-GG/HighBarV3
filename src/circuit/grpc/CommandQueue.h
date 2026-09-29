@@ -68,6 +68,9 @@ struct CommandBatchResult {
 	CommandBatchAdmissionStatus status =
 		CommandBatchAdmissionStatus::kInvalidEmpty;
 	std::size_t accepted_command_count = 0;
+	// Fixed, payload-free predicate label for opt-in coordinator tracing.
+	// Empty for accepted and non-live admission results.
+	std::string diagnostic_reason;
 
 	bool accepted() const {
 		return status == CommandBatchAdmissionStatus::kAccepted;

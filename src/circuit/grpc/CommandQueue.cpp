@@ -15,6 +15,25 @@
 
 namespace circuit::grpc {
 
+namespace {
+
+const char* TacticalAdmissionDiagnosticReason(const LiveFenceResult& result) {
+	switch (result.reason) {
+	case ::highbar::v1::LIVE_FENCE_TACTICAL_PROFILE_REQUIRED: return "tactical_fence_profile_required";
+	case ::highbar::v1::LIVE_FENCE_CATALOGUE_INCOMPLETE: return "tactical_fence_catalogue_incomplete";
+	case ::highbar::v1::LIVE_FENCE_CATALOGUE_CHANGED: return "tactical_fence_catalogue_changed";
+	case ::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED: return "tactical_fence_capability_changed";
+	case ::highbar::v1::LIVE_FENCE_QUEUE_CHANGED: return "tactical_fence_queue_changed";
+	case ::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED: return "tactical_fence_parameter_refused";
+	case ::highbar::v1::LIVE_FENCE_TARGET_NOT_FRIENDLY: return "tactical_fence_target_not_friendly";
+	case ::highbar::v1::LIVE_FENCE_FEATURE_LIFETIME_CHANGED: return "tactical_fence_feature_lifetime_changed";
+	case ::highbar::v1::LIVE_FENCE_QUEUE_TAG_CHANGED: return "tactical_fence_queue_tag_changed";
+	default: return "tactical_fence_refused";
+	}
+}
+
+}  // namespace
+
 CommandQueue::CommandQueue(Counters* counters, std::size_t capacity)
 	: counters_(counters), capacity_(capacity) {}
 
@@ -130,18 +149,22 @@ CommandBatchResult AdmitLiveCommandBatch(
 	const auto& batch = live.batch();
 	if (batch.commands_size() != 1) return {CommandBatchAdmissionStatus::kInvalidOversized, 0};
 	if (!live.has_actor() || live.actor().lifetime() == 0 || live.actor().id() > 31999u)
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_actor_invalid"};
 	if (batch.target_unit_id() != live.actor().id())
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
-	if (!state.CheckAuthority(live.binding(), now).ok || !state.BasisKnown(live.basis()))
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_target_mismatch"};
+	if (!state.CheckAuthority(live.binding(), now).ok)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_authority_invalid"};
+	if (!state.BasisKnown(live.basis()))
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_basis_unknown"};
 	const auto native_basis_expiry = state.BasisExpiry(live.basis());
 	if (!native_basis_expiry || now >= *native_basis_expiry)
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
-	if (live.remaining_basis_validity_ms() == 0
-	    || live.remaining_command_lifetime_ms() == 0
-	    || live.remaining_lease_validity_ms() == 0)
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_basis_expired"};
+	if (live.remaining_basis_validity_ms() == 0)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_basis_validity_zero"};
+	if (live.remaining_command_lifetime_ms() == 0)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_command_lifetime_zero"};
+	if (live.remaining_lease_validity_ms() == 0)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_lease_validity_zero"};
 	const auto& cmd = batch.commands(0);
 	bool semantic_ok = false;
 	auto actor_matches = [&](std::int32_t id) {
@@ -316,9 +339,16 @@ CommandBatchResult AdmitLiveCommandBatch(
 		break;
 	default: break;
 	}
-	if (!semantic_ok) return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
-	if (live.has_tactical_command() && !state.CheckTacticalCommand(live).ok)
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+	if (!semantic_ok)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0,
+		        live.semantic_action() == ::highbar::v1::LIVE_SEMANTIC_ACTION_BUILD
+		        ? "build_semantic_mismatch" : "live_semantic_mismatch"};
+	if (live.has_tactical_command()) {
+		const auto tactical = state.CheckTacticalCommand(live);
+		if (!tactical.ok)
+			return {CommandBatchAdmissionStatus::kInvalidTarget, 0,
+			        TacticalAdmissionDiagnosticReason(tactical)};
+	}
 	if (batch.batch_seq() == 0)
 		return {CommandBatchAdmissionStatus::kInvalidBatchSequence, 0};
 	if (!state.LiveBatchFresh(live))

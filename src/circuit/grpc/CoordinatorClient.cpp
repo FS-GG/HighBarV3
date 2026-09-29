@@ -264,6 +264,12 @@ void CoordinatorClient::LiveCommandReaderLoop(CommandQueue* sink, LiveControlSta
 			backoff_ms = 200; ::highbar::v1::LiveCommandBatch live;
 			while (reader->Read(&live)) {
 				const auto admission = AdmitLiveCommandBatch(*sink, live, plugin_id_ + "-live", *state);
+				if (!admission.accepted() && !admission.diagnostic_reason.empty()) {
+					AppendCoordinatorTrace(plugin_id_,
+						"live admission status="
+						+ std::string(CommandBatchAdmissionStatusName(admission.status))
+						+ " reason=" + admission.diagnostic_reason);
+				}
 				if (admission.accepted() && live_admission_observer_) {
 					live_admission_observer_(live);
 				}

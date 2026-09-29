@@ -83,6 +83,39 @@ TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 	auto altered=basis; altered.set_frame(31); EXPECT_FALSE(state->BasisKnown(altered));
 }
 
+TEST(LiveControlState, LiveAdmissionDiagnosticsIdentifyFixedPredicateWithoutPayload) {
+	const auto t0=LiveControlState::Clock::time_point{};
+	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto actor=state->MarkOwnedPresent(0);
+	const auto basis=state->RecordBasis(19,39,19000,1,std::chrono::milliseconds(500),t0);
+	auto base=[&]{ LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+		live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor);
+		live.set_semantic_action(LIVE_SEMANTIC_ACTION_STOP);
+		live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500); live.set_remaining_lease_validity_ms(500);
+		live.mutable_batch()->set_batch_seq(1); live.mutable_batch()->set_target_unit_id(0); live.mutable_batch()->set_client_command_id(1);
+		live.mutable_batch()->add_commands()->mutable_stop()->set_unit_id(0); return live; };
+	CommandQueue queue(nullptr,8);
+	auto accepted=AdmitLiveCommandBatch(queue,base(),"live",*state,t0);
+	EXPECT_TRUE(accepted.accepted()); EXPECT_TRUE(accepted.diagnostic_reason.empty());
+	auto actor_invalid=base(); actor_invalid.mutable_actor()->set_lifetime(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,actor_invalid,"live",*state,t0).diagnostic_reason,"live_actor_invalid");
+	auto target_mismatch=base(); target_mismatch.mutable_batch()->set_target_unit_id(1);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,target_mismatch,"live",*state,t0).diagnostic_reason,"live_target_mismatch");
+	auto unknown_basis=base(); unknown_basis.mutable_basis()->set_frame(40);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,unknown_basis,"live",*state,t0).diagnostic_reason,"live_basis_unknown");
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,base(),"live",*state,t0+std::chrono::milliseconds(500)).diagnostic_reason,"live_basis_expired");
+	auto empty_window=base(); empty_window.set_remaining_command_lifetime_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_window,"live",*state,t0).diagnostic_reason,"live_command_lifetime_zero");
+	auto empty_basis=base(); empty_basis.set_remaining_basis_validity_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_basis,"live",*state,t0).diagnostic_reason,"live_basis_validity_zero");
+	auto empty_lease=base(); empty_lease.set_remaining_lease_validity_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_lease,"live",*state,t0).diagnostic_reason,"live_lease_validity_zero");
+	auto semantic=base(); semantic.mutable_batch()->mutable_commands(0)->mutable_stop()->set_unit_id(1);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,semantic,"live",*state,t0).diagnostic_reason,"live_semantic_mismatch");
+	auto unarmed=State(); unarmed->MarkOwnedPresent(0); unarmed->RecordBasis(19,39,19000,1,std::chrono::milliseconds(500),t0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,base(),"live",*unarmed,t0).diagnostic_reason,"live_authority_invalid");
+}
+
 TEST(LiveControlState, AppendIsExactlyShift32AndAttackRequiresTypedTarget) {
 	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
 	const auto actor=state->MarkOwnedPresent(0); const auto target=state->MarkEnemyPresent(1,true);
@@ -430,10 +463,12 @@ TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOpti
 	}
 	intent->set_facing(static_cast<NativeBuildFacing>(99)); legacy->set_facing(-1);
 	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
-	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	auto invalid_facing=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(invalid_facing.accepted()); EXPECT_EQ(invalid_facing.diagnostic_reason,"build_semantic_mismatch");
 	intent->set_facing(NATIVE_BUILD_FACING_SOUTH); legacy->set_facing(2);
 	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
-	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	auto wrong_engine_facing=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(wrong_engine_facing.accepted()); EXPECT_EQ(wrong_engine_facing.diagnostic_reason,"build_semantic_mismatch");
 	legacy->set_facing(0); legacy->mutable_build_position()->set_x(101);
 	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
 	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
@@ -478,6 +513,7 @@ TEST(LiveControlState, RallyAdmissionRequiresExactLegacyMoveAndFreshRallyQueue) 
 	live.mutable_batch()->set_batch_seq(3); live.mutable_batch()->set_client_command_id(3);
 	live.mutable_batch()->mutable_commands(0)->mutable_move_unit()->set_options(0);
 	live.mutable_tactical_command()->set_expected_queue_revision(94);
-	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	auto stale_queue=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(stale_queue.accepted()); EXPECT_EQ(stale_queue.diagnostic_reason,"tactical_fence_queue_changed");
 }
 } // namespace
