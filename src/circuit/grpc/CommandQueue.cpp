@@ -154,8 +154,11 @@ CommandBatchResult AdmitLiveCommandBatch(
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_target_mismatch"};
 	if (!state.CheckAuthority(live.binding(), now).ok)
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_authority_invalid"};
-	if (!state.BasisKnown(live.basis()))
-		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_basis_unknown"};
+	const auto basis_lookup = state.ClassifyBasis(live.basis());
+	if (basis_lookup == BasisLookupResult::kSequenceAbsent)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "basis_sequence_absent"};
+	if (basis_lookup == BasisLookupResult::kValueMismatch)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "basis_value_mismatch"};
 	const auto native_basis_expiry = state.BasisExpiry(live.basis());
 	if (!native_basis_expiry || now >= *native_basis_expiry)
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0, "live_basis_expired"};

@@ -174,10 +174,9 @@ LiveFenceResult LiveControlState::CheckQueuedCommandLocked(
 		return {false, ::highbar::v1::LIVE_FENCE_AUTHORITY_NOT_CONFIRMED};
 	if (revoked_) return {false, ::highbar::v1::LIVE_FENCE_AUTHORITY_REVOKED};
 	if (now >= lease_deadline_) return {false, ::highbar::v1::LIVE_FENCE_LEASE_EXPIRED};
-	const auto basis_it = bases_.find(q.live_basis.state_sequence());
-	if (basis_it == bases_.end()
-	    || basis_it->second.basis.SerializeAsString() != q.live_basis.SerializeAsString())
+	if (ClassifyBasisLocked(q.live_basis) != BasisLookupResult::kKnown)
 		return {false, ::highbar::v1::LIVE_FENCE_BASIS_UNKNOWN};
+	const auto basis_it = bases_.find(q.live_basis.state_sequence());
 	if (now >= basis_it->second.expires_at)
 		return {false, ::highbar::v1::LIVE_FENCE_BASIS_EXPIRED};
 	if (now >= q.live_basis_deadline) return {false, ::highbar::v1::LIVE_FENCE_BASIS_EXPIRED};
@@ -390,21 +389,35 @@ std::string LiveControlState::BasisToken(std::uint64_t seq, std::uint64_t ns) {
 	b.set_process_incarnation(process_incarnation_); b.set_state_channel_incarnation(state_channel_incarnation_);
 	b.set_snapshot_send_monotonic_ns(ns); b.set_effective_cadence_frames(cadence);
 	bases_[seq] = {b, emitted_at, emitted_at + maximum_age};
-	while (bases_.size() > kMaxBases) bases_.erase(bases_.begin());
+	while (bases_.size() > kMaxBases) {
+		auto oldest = std::min_element(bases_.begin(), bases_.end(),
+			[](const auto& a, const auto& z) { return a.first < z.first; });
+		bases_.erase(oldest);
+	}
 	return b;
 }
 
 std::optional<LiveControlState::Clock::time_point> LiveControlState::BasisExpiry(
 		const ::highbar::v1::NativeObservationBasis& b) const {
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (ClassifyBasisLocked(b) != BasisLookupResult::kKnown) return std::nullopt;
 	auto it = bases_.find(b.state_sequence());
-	if (it == bases_.end() || it->second.basis.SerializeAsString() != b.SerializeAsString())
-		return std::nullopt;
 	return it->second.expires_at;
 }
+BasisLookupResult LiveControlState::ClassifyBasis(
+		const ::highbar::v1::NativeObservationBasis& b) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return ClassifyBasisLocked(b);
+}
+BasisLookupResult LiveControlState::ClassifyBasisLocked(
+		const ::highbar::v1::NativeObservationBasis& b) const {
+	auto it = bases_.find(b.state_sequence());
+	if (it == bases_.end()) return BasisLookupResult::kSequenceAbsent;
+	return it->second.basis.SerializeAsString() == b.SerializeAsString()
+		? BasisLookupResult::kKnown : BasisLookupResult::kValueMismatch;
+}
 bool LiveControlState::BasisKnown(const ::highbar::v1::NativeObservationBasis& b) const {
-	std::lock_guard<std::mutex> lock(mutex_); auto it = bases_.find(b.state_sequence());
-	return it != bases_.end() && it->second.basis.SerializeAsString() == b.SerializeAsString();
+	return ClassifyBasis(b) == BasisLookupResult::kKnown;
 }
 std::optional<std::vector<::highbar::v1::NativeLiveUnitMetadata>>
 LiveControlState::SnapshotUnitMetadata() {

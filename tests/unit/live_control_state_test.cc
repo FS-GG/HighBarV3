@@ -80,7 +80,43 @@ TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 	EXPECT_TRUE(drained[0].live); EXPECT_EQ(drained[0].authoritative_target_unit_id,0);
 	EXPECT_EQ(drained[0].client_command_id,9007199254740993ULL);
 	EXPECT_EQ(drained[0].live_actor.lifetime(),actor_life);
+	EXPECT_EQ(state->ClassifyBasis(basis),BasisLookupResult::kKnown);
 	auto altered=basis; altered.set_frame(31); EXPECT_FALSE(state->BasisKnown(altered));
+	EXPECT_EQ(state->ClassifyBasis(altered),BasisLookupResult::kValueMismatch);
+	auto absent=basis; absent.set_state_sequence(10);
+	EXPECT_EQ(state->ClassifyBasis(absent),BasisLookupResult::kSequenceAbsent);
+}
+
+TEST(LiveControlState, BasisRetentionKeepsNewestMonotonicWindowAndStrictIdentityExpiry) {
+	const auto t0=LiveControlState::Clock::time_point{};
+	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto actor=state->MarkOwnedPresent(0);
+	NativeObservationBasis newest_evicted;
+	NativeObservationBasis oldest_retained;
+	NativeObservationBasis newest;
+	for (std::uint64_t sequence=1; sequence<=1066; ++sequence) {
+		auto basis=state->RecordBasis(sequence,static_cast<std::uint32_t>(sequence),
+			10000+sequence,1,std::chrono::milliseconds(5),t0);
+		if (sequence==810) newest_evicted=basis;
+		if (sequence==811) oldest_retained=basis;
+		if (sequence==1066) newest=basis;
+	}
+	EXPECT_EQ(state->ClassifyBasis(newest_evicted),BasisLookupResult::kSequenceAbsent);
+	EXPECT_EQ(state->ClassifyBasis(oldest_retained),BasisLookupResult::kKnown);
+	EXPECT_EQ(state->ClassifyBasis(newest),BasisLookupResult::kKnown);
+	auto altered=newest; altered.set_frame(newest.frame()+1);
+	EXPECT_EQ(state->ClassifyBasis(altered),BasisLookupResult::kValueMismatch);
+
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=newest;
+	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor);
+	live.set_semantic_action(LIVE_SEMANTIC_ACTION_STOP);
+	live.set_remaining_basis_validity_ms(5); live.set_remaining_command_lifetime_ms(5);
+	live.set_remaining_lease_validity_ms(5);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_target_unit_id(0);
+	batch->set_client_command_id(1); batch->add_commands()->mutable_stop()->set_unit_id(0);
+	CommandQueue queue(nullptr,4);
+	const auto expired=AdmitLiveCommandBatch(queue,live,"live",*state,t0+std::chrono::milliseconds(5));
+	EXPECT_FALSE(expired.accepted()); EXPECT_EQ(expired.diagnostic_reason,"live_basis_expired");
 }
 
 TEST(LiveControlState, LiveAdmissionDiagnosticsIdentifyFixedPredicateWithoutPayload) {
@@ -101,8 +137,10 @@ TEST(LiveControlState, LiveAdmissionDiagnosticsIdentifyFixedPredicateWithoutPayl
 	EXPECT_EQ(AdmitLiveCommandBatch(queue,actor_invalid,"live",*state,t0).diagnostic_reason,"live_actor_invalid");
 	auto target_mismatch=base(); target_mismatch.mutable_batch()->set_target_unit_id(1);
 	EXPECT_EQ(AdmitLiveCommandBatch(queue,target_mismatch,"live",*state,t0).diagnostic_reason,"live_target_mismatch");
-	auto unknown_basis=base(); unknown_basis.mutable_basis()->set_frame(40);
-	EXPECT_EQ(AdmitLiveCommandBatch(queue,unknown_basis,"live",*state,t0).diagnostic_reason,"live_basis_unknown");
+	auto mismatched_basis=base(); mismatched_basis.mutable_basis()->set_frame(40);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,mismatched_basis,"live",*state,t0).diagnostic_reason,"basis_value_mismatch");
+	auto absent_basis=base(); absent_basis.mutable_basis()->set_state_sequence(20);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,absent_basis,"live",*state,t0).diagnostic_reason,"basis_sequence_absent");
 	EXPECT_EQ(AdmitLiveCommandBatch(queue,base(),"live",*state,t0+std::chrono::milliseconds(500)).diagnostic_reason,"live_basis_expired");
 	auto empty_window=base(); empty_window.set_remaining_command_lifetime_ms(0);
 	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_window,"live",*state,t0).diagnostic_reason,"live_command_lifetime_zero");
@@ -147,6 +185,12 @@ TEST(LiveControlState, DrainFenceUsesControlledClockAndCurrentActorLifetime) {
 	q.live_command_deadline=t0+std::chrono::milliseconds(400);
 	q.live_lease_deadline=t0+std::chrono::milliseconds(800);
 	EXPECT_TRUE(state->CheckQueuedCommand(q,t0+std::chrono::milliseconds(399)).ok);
+	auto mismatched_basis=q; mismatched_basis.live_basis.set_frame(41);
+	auto mismatched=state->CheckQueuedCommand(mismatched_basis,t0);
+	EXPECT_FALSE(mismatched.ok); EXPECT_EQ(mismatched.reason,LIVE_FENCE_BASIS_UNKNOWN);
+	auto absent_basis=q; absent_basis.live_basis.set_state_sequence(21);
+	auto absent=state->CheckQueuedCommand(absent_basis,t0);
+	EXPECT_FALSE(absent.ok); EXPECT_EQ(absent.reason,LIVE_FENCE_BASIS_UNKNOWN);
 	auto expired=state->CheckQueuedCommand(q,t0+std::chrono::milliseconds(400));
 	EXPECT_FALSE(expired.ok); EXPECT_EQ(expired.reason,LIVE_FENCE_COMMAND_EXPIRED);
 	state->MarkOwnedRemoved(0);

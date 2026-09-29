@@ -21,6 +21,12 @@ struct LiveFenceResult {
 		::highbar::v1::LIVE_FENCE_AUTHORITY_NOT_CONFIRMED;
 };
 
+enum class BasisLookupResult {
+	kKnown,
+	kSequenceAbsent,
+	kValueMismatch,
+};
+
 // Shared background/engine-thread state for the opt-in live profile. Network
 // threads may change authority; engine callbacks own identities and snapshot
 // bases. All compound transitions are linearized by one mutex.
@@ -77,6 +83,8 @@ public:
 		std::uint32_t effective_cadence_frames,
 		std::chrono::milliseconds maximum_age,
 		Clock::time_point emitted_at = Clock::now());
+	BasisLookupResult ClassifyBasis(
+		const ::highbar::v1::NativeObservationBasis& basis) const;
 	bool BasisKnown(const ::highbar::v1::NativeObservationBasis& basis) const;
 	std::optional<Clock::time_point> BasisExpiry(
 		const ::highbar::v1::NativeObservationBasis& basis) const;
@@ -107,6 +115,8 @@ private:
 		const QueuedCommand& command, Clock::time_point now) const;
 	LiveFenceResult CheckTacticalCommandLocked(
 		const ::highbar::v1::LiveCommandBatch& batch) const;
+	BasisLookupResult ClassifyBasisLocked(
+		const ::highbar::v1::NativeObservationBasis& basis) const;
 
 	std::string plugin_id_;
 	std::string process_incarnation_;
