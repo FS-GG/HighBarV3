@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/CommandQueue.h"
+#include "grpc/CommandDispatch.h"
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
 
@@ -411,14 +412,33 @@ TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOpti
 	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(lifetime); live.set_semantic_action(LIVE_SEMANTIC_ACTION_BUILD);
 	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500); live.set_remaining_lease_validity_ms(500);
 	auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(9); tactical->set_actor_descriptor_revision(13); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(14);
-	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(100); intent->mutable_position()->set_elevation(5); intent->mutable_position()->set_z(200); intent->set_facing(NATIVE_BUILD_FACING_SOUTH); intent->set_queue_policy(NATIVE_QUEUE_POLICY_APPEND);
+	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(100); intent->mutable_position()->set_elevation(5); intent->mutable_position()->set_z(200); intent->set_queue_policy(NATIVE_QUEUE_POLICY_APPEND);
 	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1); batch->set_target_unit_id(0);
-	auto* legacy=batch->add_commands()->mutable_build_unit(); legacy->set_unit_id(0); legacy->set_to_build_unit_def_id(42); legacy->set_options(32); legacy->set_facing(2); legacy->mutable_build_position()->set_x(100); legacy->mutable_build_position()->set_y(5); legacy->mutable_build_position()->set_z(200);
-	CommandQueue queue(nullptr,3);
-	EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
-	live.mutable_batch()->set_batch_seq(2); live.mutable_batch()->set_client_command_id(2); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->set_facing(1);
+	auto* legacy=batch->add_commands()->mutable_build_unit(); legacy->set_unit_id(0); legacy->set_to_build_unit_def_id(42); legacy->set_options(32); legacy->mutable_build_position()->set_x(100); legacy->mutable_build_position()->set_y(5); legacy->mutable_build_position()->set_z(200);
+	CommandQueue queue(nullptr,8);
+	const std::pair<NativeBuildFacing, int> facings[] = {
+		{NATIVE_BUILD_FACING_NORTH, 2},
+		{NATIVE_BUILD_FACING_EAST, 1},
+		{NATIVE_BUILD_FACING_SOUTH, 0},
+		{NATIVE_BUILD_FACING_WEST, 3},
+	};
+	std::uint64_t sequence = 1;
+	for (const auto& [protocol, engine] : facings) {
+		intent->set_facing(protocol); legacy->set_facing(engine);
+		batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+		EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	}
+	intent->set_facing(static_cast<NativeBuildFacing>(99)); legacy->set_facing(-1);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
 	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
-	live.mutable_batch()->set_batch_seq(3); live.mutable_batch()->set_client_command_id(3); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->set_facing(2); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->mutable_build_position()->set_x(101);
+	intent->set_facing(NATIVE_BUILD_FACING_SOUTH); legacy->set_facing(2);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	legacy->set_facing(0); legacy->mutable_build_position()->set_x(101);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	legacy->mutable_build_position()->set_x(100); legacy->set_options(0);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence);
 	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
 }
 

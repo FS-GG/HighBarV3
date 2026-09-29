@@ -34,6 +34,17 @@ namespace circuit::grpc {
 
 class FeatureLifetimeLedger;
 
+constexpr int EngineFacingForNativeBuild(
+		::highbar::v1::NativeBuildFacing facing) {
+	switch (facing) {
+	case ::highbar::v1::NATIVE_BUILD_FACING_NORTH: return 2;
+	case ::highbar::v1::NATIVE_BUILD_FACING_EAST: return 1;
+	case ::highbar::v1::NATIVE_BUILD_FACING_SOUTH: return 0;
+	case ::highbar::v1::NATIVE_BUILD_FACING_WEST: return 3;
+	default: return -1;
+	}
+}
+
 inline bool IsGameWideCommand(const ::highbar::v1::AICommand& cmd) {
 	using C = ::highbar::v1::AICommand;
 	switch (cmd.command_case()) {

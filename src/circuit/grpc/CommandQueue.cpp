@@ -3,6 +3,7 @@
 // HighBarV3 — CommandQueue impl (T055).
 
 #include "grpc/CommandQueue.h"
+#include "grpc/CommandDispatch.h"
 #include "grpc/Counters.h"
 #include "grpc/LiveControlState.h"
 
@@ -156,12 +157,6 @@ CommandBatchResult AdmitLiveCommandBatch(
 			&& legacy.x() == typed.x() && legacy.z() == typed.z()
 			&& legacy.y() == (typed.has_elevation() ? typed.elevation() : 0.0f);
 	};
-	auto native_facing = [](::highbar::v1::NativeBuildFacing facing) {
-		return facing == ::highbar::v1::NATIVE_BUILD_FACING_NORTH ? 0
-			: facing == ::highbar::v1::NATIVE_BUILD_FACING_EAST ? 1
-			: facing == ::highbar::v1::NATIVE_BUILD_FACING_SOUTH ? 2
-			: facing == ::highbar::v1::NATIVE_BUILD_FACING_WEST ? 3 : -1;
-	};
 	switch (live.semantic_action()) {
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_STOP:
 		semantic_ok = cmd.command_case() == ::highbar::v1::AICommand::kStop
@@ -197,7 +192,8 @@ CommandBatchResult AdmitLiveCommandBatch(
 				== static_cast<std::int32_t>(live.tactical_command().build().definition_id())
 			&& cmd.build_unit().options() == policy_options(live.tactical_command().build().queue_policy())
 			&& same_position(cmd.build_unit().build_position(), live.tactical_command().build().position())
-			&& cmd.build_unit().facing() == native_facing(live.tactical_command().build().facing());
+			&& EngineFacingForNativeBuild(live.tactical_command().build().facing()) >= 0
+			&& cmd.build_unit().facing() == EngineFacingForNativeBuild(live.tactical_command().build().facing());
 		break;
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD:
 		semantic_ok = live.has_tactical_command()

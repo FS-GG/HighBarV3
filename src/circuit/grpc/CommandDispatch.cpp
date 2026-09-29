@@ -47,15 +47,11 @@ short TacticalOptions(::highbar::v1::NativeQueuePolicy policy) {
 		? UNIT_COMMAND_OPTION_SHIFT_KEY : 0;
 }
 
-int NativeFacing(::highbar::v1::NativeBuildFacing facing) {
-	switch (facing) {
-	case ::highbar::v1::NATIVE_BUILD_FACING_NORTH: return UNIT_FACING_NORTH;
-	case ::highbar::v1::NATIVE_BUILD_FACING_EAST: return UNIT_FACING_EAST;
-	case ::highbar::v1::NATIVE_BUILD_FACING_SOUTH: return UNIT_FACING_SOUTH;
-	case ::highbar::v1::NATIVE_BUILD_FACING_WEST: return UNIT_FACING_WEST;
-	default: return UNIT_NO_FACING;
-	}
-}
+static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_NORTH) == UNIT_FACING_NORTH);
+static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_EAST) == UNIT_FACING_EAST);
+static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_SOUTH) == UNIT_FACING_SOUTH);
+static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_WEST) == UNIT_FACING_WEST);
+static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_UNSPECIFIED) == UNIT_NO_FACING);
 
 springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 	return springai::AIFloat3(v.x(), v.y(), v.z());
@@ -81,7 +77,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		auto* def = ai->GetCircuitDefSafe(body.definition_id());
 		if (def == nullptr || !unit->GetCircuitDef()->CanBuild(def)) return false;
 		const auto pos = position(body.position());
-		const int facing = NativeFacing(body.facing());
+		const int facing = EngineFacingForNativeBuild(body.facing());
 		auto* map = ai->GetMap();
 		if (map == nullptr || facing < 0 || !std::isfinite(pos.x)
 		    || !std::isfinite(pos.y) || !std::isfinite(pos.z)
