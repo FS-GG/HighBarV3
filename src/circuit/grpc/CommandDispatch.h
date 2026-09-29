@@ -100,8 +100,8 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
                      const ::highbar::v1::AICommand& cmd,
                      ::circuit::CEnemyInfo* selected_attack_target = nullptr);
 
-// `refusal_reason` is written only when dispatch returns false.  It feeds the
-// existing opt-in coordinator trace with a fixed, payload-free reason label.
+// `refusal_reason` is meaningful only when dispatch returns false.  It feeds
+// the existing opt-in coordinator trace with a fixed, payload-free reason label.
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	::circuit::CCircuitUnit* unit,
 	const ::highbar::v1::NativeTacticalCommand& command,
