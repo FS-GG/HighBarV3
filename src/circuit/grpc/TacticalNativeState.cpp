@@ -40,11 +40,9 @@ void AdvanceLifetime(std::uint64_t* lifetime) {
 
 }  // namespace
 
-bool SupportsRallyQueueApi(const char* hash, const char* branch,
-		const char* additional) {
-	return hash != nullptr && branch != nullptr && additional != nullptr
+bool SupportsRallyQueueApi(const char* hash, const char* additional) {
+	return hash != nullptr && additional != nullptr
 		&& std::strcmp(hash, kRallyQueueEngineHash) == 0
-		&& std::strcmp(branch, kRallyQueueEngineBranch) == 0
 		&& std::strcmp(additional, kRallyQueueEngineAdditional) == 0;
 }
 

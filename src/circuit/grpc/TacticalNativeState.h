@@ -9,17 +9,14 @@
 namespace circuit::grpc {
 
 inline constexpr const char* kRallyQueueEngineHash = "7555c83";
-inline constexpr const char* kRallyQueueEngineBranch =
-	"routine/barc-01.5-rally-api";
 inline constexpr const char* kRallyQueueEngineAdditional =
-	"BARC-01.5-rally-api-v1";
+	"BARC-01.5-rally-api-v1 Headless";
 
 // These values come exclusively from callbacks that predate the appended
 // rally API. Callers must establish this identity before reading any appended
 // SSkirmishAICallback field, because even testing such a field on an older
 // callback table is out-of-bounds.
-bool SupportsRallyQueueApi(const char* hash, const char* branch,
-	const char* additional);
+bool SupportsRallyQueueApi(const char* hash, const char* additional);
 
 // Engine-neutral projections of the Spring command and feature callbacks.
 // Keeping these types independent of protobuf lets the engine thread take one

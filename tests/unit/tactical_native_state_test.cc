@@ -10,15 +10,14 @@ using namespace circuit::grpc;
 
 TEST(TacticalNativeState, RallyQueueApiRequiresExactPreexistingVersionIdentity) {
 	EXPECT_TRUE(SupportsRallyQueueApi(
-		kRallyQueueEngineHash, kRallyQueueEngineBranch,
-		kRallyQueueEngineAdditional));
+		kRallyQueueEngineHash, kRallyQueueEngineAdditional));
 	EXPECT_FALSE(SupportsRallyQueueApi(
-		"7555c82", kRallyQueueEngineBranch, kRallyQueueEngineAdditional));
+		"7555c82", kRallyQueueEngineAdditional));
 	EXPECT_FALSE(SupportsRallyQueueApi(
-		kRallyQueueEngineHash, "master", kRallyQueueEngineAdditional));
+		kRallyQueueEngineHash, ""));
 	EXPECT_FALSE(SupportsRallyQueueApi(
-		kRallyQueueEngineHash, kRallyQueueEngineBranch, ""));
-	EXPECT_FALSE(SupportsRallyQueueApi(nullptr, nullptr, nullptr));
+		kRallyQueueEngineHash, "BARC-01.5-rally-api-v1"));
+	EXPECT_FALSE(SupportsRallyQueueApi(nullptr, nullptr));
 }
 
 TEST(TacticalNativeState, EmptyQueueIsACompleteRevisionNotUnavailable) {

@@ -651,12 +651,12 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	snapshot.set_catalogue_revision(tactical_catalogue_revision_);
 	auto* callback = circuit->GetCallback();
 	if (callback == nullptr) return;
-	// All three calls below predate the appended rally callbacks. Do not read
+	// Both calls below predate the appended rally callbacks. Do not read
 	// an appended callback-table field until this exact identity is established.
 	auto* engine = circuit->GetEngine();
 	const bool rally_api_available = engine != nullptr
 		&& grpc::SupportsRallyQueueApi(engine->GetVersionHash(),
-			engine->GetVersionBranch(), engine->GetVersionAdditional());
+			engine->GetVersionAdditional());
 	auto* economy_manager = circuit->GetEconomyManager();
 	std::unique_ptr<springai::Economy> economy(callback->GetEconomy());
 	auto* econ = snapshot.mutable_economy();
