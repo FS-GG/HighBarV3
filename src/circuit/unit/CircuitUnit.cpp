@@ -23,6 +23,7 @@
 #include "WrappCurrentCommand.h"
 #include "Weapon.h"
 #include "WrappWeaponMount.h"
+#include "Feature.h"
 
 namespace circuit {
 
@@ -434,6 +435,13 @@ void CCircuitUnit::CmdReclaimEnemy(CEnemyInfo* enemy, short options, int timeout
 void CCircuitUnit::CmdReclaimUnit(CAllyUnit* toReclaim, short options, int timeout)
 {
 	unit->ReclaimUnit(toReclaim->GetUnit(), options, timeout);
+	taskState = ETaskState::EXECUTE;
+}
+
+void CCircuitUnit::CmdReclaimFeature(Feature* toReclaim, short options, int timeout)
+{
+	if (toReclaim == nullptr) return;
+	unit->ReclaimFeature(toReclaim, options, timeout);
 	taskState = ETaskState::EXECUTE;
 }
 

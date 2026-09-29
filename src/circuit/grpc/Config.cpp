@@ -179,6 +179,15 @@ TransportEndpoint LoadTransportConfig(CCircuitAI* ai) {
 			}
 			cfg.live_control.max_reported_units = v;
 		}
+		if (live.isMember("mixed_lifecycle_qualification_path")) {
+			const auto path = live["mixed_lifecycle_qualification_path"].asString();
+			if (path.empty() || path.front() != '/') {
+				LogError(ai, "grpc::Config",
+				         "mixed lifecycle qualification path is not absolute; hook disabled");
+			} else {
+				cfg.live_control.mixed_lifecycle_qualification_path = path;
+			}
+		}
 	}
 	if (root.isMember("command_validation")) {
 		const Json::Value& cv = root["command_validation"];

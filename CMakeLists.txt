@@ -52,6 +52,13 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+	# The tactical helper lands in the native implementation lane. Keep this
+	# contract checkpoint independently buildable while registering the helper
+	# as soon as the coherent join supplies it.
+	if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+		target_sources(highbar_command_queue_test_support PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+	endif ()
 	target_include_directories(highbar_command_queue_test_support PUBLIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
 	target_link_libraries(highbar_command_queue_test_support PUBLIC
@@ -88,6 +95,39 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			highbar_command_queue_test_support
 			GTest::gtest GTest::gtest_main)
 		add_test(NAME live_control_state_test COMMAND live_control_state_test)
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_native_state_test.cc")
+			add_executable(tactical_native_state_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_native_state_test.cc")
+			target_include_directories(tactical_native_state_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(tactical_native_state_test PRIVATE
+				highbar_command_queue_test_support
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME tactical_native_state_test COMMAND tactical_native_state_test)
+		endif ()
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_feature_capacity_test.cc")
+			add_executable(tactical_feature_capacity_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_feature_capacity_test.cc")
+			target_include_directories(tactical_feature_capacity_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(tactical_feature_capacity_test PRIVATE
+				highbar_command_queue_test_support
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME tactical_feature_capacity_test COMMAND tactical_feature_capacity_test)
+		endif ()
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_dispatch_diagnostic_test.cc")
+			add_executable(tactical_dispatch_diagnostic_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_dispatch_diagnostic_test.cc")
+			target_include_directories(tactical_dispatch_diagnostic_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(tactical_dispatch_diagnostic_test PRIVATE
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME tactical_dispatch_diagnostic_test
+				COMMAND tactical_dispatch_diagnostic_test)
+		endif ()
 
 		add_executable(state_update_projection_test
 			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/state_update_projection_test.cc")
@@ -323,6 +363,10 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+			if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+				target_sources(highbar_command_queue_test_support PRIVATE
+					"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+			endif ()
 			target_include_directories(highbar_command_queue_test_support PUBLIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit"
 				"${HIGHBAR_PROTO_GEN_DIR}"
@@ -408,7 +452,9 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 					protobuf::libprotobuf)
 				if (_test_name STREQUAL "command_queue_test"
 				    OR _test_name STREQUAL "coordinator_command_admission_test"
-				    OR _test_name STREQUAL "live_control_state_test")
+				    OR _test_name STREQUAL "live_control_state_test"
+				    OR _test_name STREQUAL "tactical_native_state_test"
+				    OR _test_name STREQUAL "tactical_feature_capacity_test")
 					target_link_libraries("${_test_name}" PRIVATE
 						highbar_command_queue_test_support)
 					if (_test_name STREQUAL "coordinator_command_admission_test")

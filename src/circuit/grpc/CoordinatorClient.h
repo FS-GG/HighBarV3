@@ -17,6 +17,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -61,8 +62,14 @@ public:
 	// up at the top of each frame tick.
 	void StartCommandChannel(CommandQueue* sink);
 	void StartLiveChannels(CommandQueue* sink, LiveControlState* live_state);
+	void SetLiveAdmissionObserver(
+		std::function<void(const ::highbar::v1::LiveCommandBatch&)> observer) {
+		live_admission_observer_ = std::move(observer);
+	}
 	void ReportLiveCapabilities(const ::highbar::v1::LiveNativeCapabilities& capabilities);
 	void ReportLiveSnapshot(const ::highbar::v1::LiveSnapshotMetadata& snapshot);
+	void ReportTacticalCatalogue(const ::highbar::v1::TacticalCataloguePage& page);
+	void ReportTacticalSnapshot(const ::highbar::v1::TacticalSnapshotMetadata& snapshot);
 
 	bool IsConnected() const { return connected_.load(std::memory_order_acquire); }
 	std::uint64_t OkCount() const { return ok_count_.load(std::memory_order_acquire); }
@@ -137,6 +144,7 @@ private:
 	std::deque<::highbar::v1::LiveStateReport> live_reports_;
 	std::atomic<std::uint64_t> live_report_sequence_{0};
 	LiveControlState* live_state_ = nullptr;
+	std::function<void(const ::highbar::v1::LiveCommandBatch&)> live_admission_observer_;
 	static constexpr std::size_t kMaxQueuedLiveReports = 64;
 };
 

@@ -39,6 +39,8 @@ struct LiveControlSettings {
 	// own runtime qualification.
 	std::uint32_t max_observation_age_ms = 2000;
 	std::uint32_t max_reported_units = 64;
+	// Qualification-only private binding file. Empty disables the hook.
+	std::string mixed_lifecycle_qualification_path;
 };
 
 struct CommandValidationConfig {

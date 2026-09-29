@@ -38,6 +38,7 @@
 #include "highbar/callbacks.pb.h"
 #include "highbar/service.pb.h"
 #include "highbar/state.pb.h"
+#include "highbar/live_control.pb.h"
 #include "grpc/Config.h"
 #include "grpc/AdminController.h"
 #include "grpc/SnapshotTick.h"
@@ -55,6 +56,9 @@ class CommandQueue;
 class OrderStateTracker;
 class CoordinatorClient;
 class LiveControlState;
+class FeatureLifetimeLedger;
+class MixedLifecycleQualification;
+struct QueuedCommand;
 }  // namespace circuit::grpc
 
 namespace circuit {
@@ -223,6 +227,9 @@ private:
 	std::unique_ptr<grpc::CommandQueue> command_queue_;
 	std::unique_ptr<grpc::OrderStateTracker> order_state_tracker_;
 	std::unique_ptr<grpc::LiveControlState> live_control_state_;
+	std::unique_ptr<grpc::FeatureLifetimeLedger> tactical_feature_lifetimes_;
+	std::unique_ptr<grpc::MixedLifecycleQualification> mixed_lifecycle_qualification_;
+	std::unique_ptr<grpc::QueuedCommand> mixed_lifecycle_held_command_;
 	std::unique_ptr<grpc::HighBarService> service_;
 	std::optional<grpc::TransportEndpoint> deferred_service_bind_endpoint_;
 	bool service_bound_ = false;
@@ -239,6 +246,9 @@ private:
 	std::uint32_t frame_counter_ = 0;
 	std::uint32_t live_max_observation_age_ms_ = 2000;
 	std::uint32_t live_max_reported_units_ = 64;
+	std::string tactical_catalogue_id_;
+	std::uint64_t tactical_catalogue_revision_ = 0;
+	bool tactical_catalogue_complete_ = false;
 
 	std::string bound_address_;
 
@@ -273,6 +283,9 @@ private:
 	// T057 helper: drain CommandQueue, dispatch each via
 	// CCircuitUnit::Cmd*. Engine-thread only.
 	void DrainCommandQueue();
+	bool BeginMixedLifecycleQualificationFrame();
+	bool MaybeStartMixedLifecycleQualification(
+		const grpc::QueuedCommand& command);
 	void DrainAdminActionQueue();
 	bool ApplyAdminAction(const ::highbar::v1::AdminAction& action);
 	// Minimal InvokeCallback bridge. Worker threads enqueue callback
@@ -287,6 +300,9 @@ private:
 	void EnsureLocalServiceBound(const char* reason);
 	void EnsureCoordinatorClientStarted(const char* reason);
 	void MaybeEmitInitialCoordinatorSnapshot(const char* reason);
+	void BuildAndReportTacticalCatalogue();
+	void BuildAndReportTacticalSnapshot(
+		const ::highbar::v1::NativeObservationBasis& basis);
 
 	// 003-snapshot-arm-coverage T011 — engine-thread snapshot
 	// serializer + fan-out. Called from OnFrameTick when

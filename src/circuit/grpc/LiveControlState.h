@@ -21,6 +21,12 @@ struct LiveFenceResult {
 		::highbar::v1::LIVE_FENCE_AUTHORITY_NOT_CONFIRMED;
 };
 
+enum class BasisLookupResult {
+	kKnown,
+	kSequenceAbsent,
+	kValueMismatch,
+};
+
 // Shared background/engine-thread state for the opt-in live profile. Network
 // threads may change authority; engine callbacks own identities and snapshot
 // bases. All compound transitions are linearized by one mutex.
@@ -77,6 +83,8 @@ public:
 		std::uint32_t effective_cadence_frames,
 		std::chrono::milliseconds maximum_age,
 		Clock::time_point emitted_at = Clock::now());
+	BasisLookupResult ClassifyBasis(
+		const ::highbar::v1::NativeObservationBasis& basis) const;
 	bool BasisKnown(const ::highbar::v1::NativeObservationBasis& basis) const;
 	std::optional<Clock::time_point> BasisExpiry(
 		const ::highbar::v1::NativeObservationBasis& basis) const;
@@ -84,6 +92,12 @@ public:
 	SnapshotUnitMetadata();
 	bool LiveBatchFresh(const ::highbar::v1::LiveCommandBatch& batch) const;
 	void RememberLiveBatch(const ::highbar::v1::LiveCommandBatch& batch);
+	void RecordTacticalCatalogue(const std::string& catalogue_id,
+	                            std::uint64_t revision, bool complete);
+	void RecordTacticalSnapshot(
+		const ::highbar::v1::TacticalSnapshotMetadata& snapshot);
+	LiveFenceResult CheckTacticalCommand(
+		const ::highbar::v1::LiveCommandBatch& batch) const;
 
 private:
 	struct UnitLife { std::uint64_t lifetime = 0; bool present = false; bool visual = false; };
@@ -99,6 +113,10 @@ private:
 	static std::string BasisToken(std::uint64_t seq, std::uint64_t send_ns);
 	LiveFenceResult CheckQueuedCommandLocked(
 		const QueuedCommand& command, Clock::time_point now) const;
+	LiveFenceResult CheckTacticalCommandLocked(
+		const ::highbar::v1::LiveCommandBatch& batch) const;
+	BasisLookupResult ClassifyBasisLocked(
+		const ::highbar::v1::NativeObservationBasis& basis) const;
 
 	std::string plugin_id_;
 	std::string process_incarnation_;
@@ -117,6 +135,10 @@ private:
 	std::unordered_map<std::uint32_t, UnitLife> enemies_;
 	std::unordered_map<std::uint64_t, BasisEntry> bases_;
 	std::unordered_map<std::string, std::uint64_t> admitted_live_batches_;
+	std::string tactical_catalogue_id_;
+	std::uint64_t tactical_catalogue_revision_ = 0;
+	bool tactical_catalogue_complete_ = false;
+	std::optional<::highbar::v1::TacticalSnapshotMetadata> tactical_snapshot_;
 	static constexpr std::size_t kMaxBases = 256;
 };
 

@@ -28,6 +28,8 @@ service HighBarLiveControl {
 enum LiveControlProtocol {
   LIVE_CONTROL_PROTOCOL_UNSPECIFIED = 0;
   LIVE_CONTROL_PROTOCOL_V1 = 1;
+  // Tactical v1 is additive. A V1 peer must refuse every tactical body.
+  LIVE_CONTROL_PROTOCOL_TACTICAL_V1 = 2;
 }
 
 enum LiveControlDirectiveKind {
@@ -51,6 +53,17 @@ enum LiveSemanticAction {
   LIVE_SEMANTIC_ACTION_MOVE_REPLACE = 2;
   LIVE_SEMANTIC_ACTION_MOVE_APPEND = 3;
   LIVE_SEMANTIC_ACTION_ATTACK_VISIBLE_UNIT = 4;
+  LIVE_SEMANTIC_ACTION_BUILD = 5;
+  LIVE_SEMANTIC_ACTION_GUARD = 6;
+  LIVE_SEMANTIC_ACTION_REPAIR = 7;
+  LIVE_SEMANTIC_ACTION_RECLAIM_UNIT = 8;
+  LIVE_SEMANTIC_ACTION_RECLAIM_FEATURE = 9;
+  LIVE_SEMANTIC_ACTION_RECLAIM_AREA = 10;
+  LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE = 11;
+  LIVE_SEMANTIC_ACTION_SET_RALLY = 12;
+  LIVE_SEMANTIC_ACTION_QUEUE_EDIT = 13;
+  LIVE_SEMANTIC_ACTION_BAR_CONSTRUCTION_PRIORITY = 14;
+  LIVE_SEMANTIC_ACTION_BAR_CLOAK_DESIRE = 15;
 }
 
 enum LiveFenceReason {
@@ -68,6 +81,18 @@ enum LiveFenceReason {
   LIVE_FENCE_TARGET_LIFETIME_CHANGED = 11;
   LIVE_FENCE_CAPABILITY_CHANGED = 12;
   LIVE_FENCE_COMMAND_EXPIRED = 13;
+  LIVE_FENCE_TACTICAL_PROFILE_REQUIRED = 14;
+  LIVE_FENCE_CATALOGUE_INCOMPLETE = 15;
+  LIVE_FENCE_CATALOGUE_CHANGED = 16;
+  LIVE_FENCE_DEFINITION_UNAVAILABLE = 17;
+  LIVE_FENCE_TARGET_NOT_FRIENDLY = 18;
+  LIVE_FENCE_FEATURE_UNAVAILABLE = 19;
+  LIVE_FENCE_FEATURE_LIFETIME_CHANGED = 20;
+  LIVE_FENCE_QUEUE_CHANGED = 21;
+  LIVE_FENCE_QUEUE_TAG_CHANGED = 22;
+  LIVE_FENCE_PLACEMENT_REFUSED = 23;
+  LIVE_FENCE_PARAMETER_REFUSED = 24;
+  LIVE_FENCE_RESOURCE_UNAVAILABLE = 25;
 }
 
 enum LiveStateReportDisposition {
@@ -184,6 +209,8 @@ message LiveStateReport {
   oneof body {
     LiveNativeCapabilities capabilities = 10;
     LiveSnapshotMetadata snapshot = 11;
+    TacticalCataloguePage tactical_catalogue = 12;
+    TacticalSnapshotMetadata tactical_snapshot = 13;
   }
 }
 
@@ -218,6 +245,9 @@ message LiveCommandBatch {
   uint32 remaining_basis_validity_ms = 8;
   uint32 remaining_command_lifetime_ms = 9;
   uint32 remaining_lease_validity_ms = 10;
+  // Present only for LIVE_CONTROL_PROTOCOL_TACTICAL_V1. The legacy command
+  // remains exactly one translated child and must match this typed intent.
+  optional NativeTacticalCommand tactical_command = 11;
 }
 
 // Producer-advertised values have no schema defaults. Live arm is refused when
@@ -239,4 +269,276 @@ message LiveNativeCapabilities {
   bool supports_move = 14;
   bool supports_attack_visible_unit = 15;
   uint32 max_reported_units = 16;
+  optional NativeTacticalCapabilities tactical = 17;
+}
+
+// ---- Additive tactical profile ------------------------------------------------
+
+enum NativeQueuePolicy {
+  NATIVE_QUEUE_POLICY_UNSPECIFIED = 0;
+  NATIVE_QUEUE_POLICY_REPLACE = 1;
+  NATIVE_QUEUE_POLICY_APPEND = 2;
+  NATIVE_QUEUE_POLICY_REJECT_IF_BUSY = 3;
+}
+
+enum NativeBuildFacing {
+  NATIVE_BUILD_FACING_UNSPECIFIED = 0;
+  NATIVE_BUILD_FACING_NORTH = 1;
+  NATIVE_BUILD_FACING_EAST = 2;
+  NATIVE_BUILD_FACING_SOUTH = 3;
+  NATIVE_BUILD_FACING_WEST = 4;
+}
+
+enum NativeQueueEditKind {
+  NATIVE_QUEUE_EDIT_KIND_UNSPECIFIED = 0;
+  NATIVE_QUEUE_EDIT_KIND_INSERT = 1;
+  NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG = 2;
+  NATIVE_QUEUE_EDIT_KIND_SET_REPEAT = 3;
+}
+
+enum NativeQueueDomain {
+  NATIVE_QUEUE_DOMAIN_UNSPECIFIED = 0;
+  NATIVE_QUEUE_DOMAIN_ACTOR_ORDER = 1;
+  NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION = 2;
+  NATIVE_QUEUE_DOMAIN_FACTORY_RALLY = 3;
+}
+
+enum NativeTacticalDescriptorKind {
+  NATIVE_TACTICAL_DESCRIPTOR_KIND_UNSPECIFIED = 0;
+  NATIVE_TACTICAL_DESCRIPTOR_BUILD = 1;
+  NATIVE_TACTICAL_DESCRIPTOR_GUARD = 2;
+  NATIVE_TACTICAL_DESCRIPTOR_REPAIR = 3;
+  NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_UNIT = 4;
+  NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE = 5;
+  NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_AREA = 6;
+  NATIVE_TACTICAL_DESCRIPTOR_FACTORY_PRODUCE = 7;
+  NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY = 8;
+  NATIVE_TACTICAL_DESCRIPTOR_QUEUE_INSERT = 9;
+  NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REMOVE = 10;
+  NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REPEAT = 11;
+  NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY = 12;
+  NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE = 13;
+}
+
+enum NativeTacticalModeValue {
+  NATIVE_TACTICAL_MODE_VALUE_UNSPECIFIED = 0;
+  NATIVE_TACTICAL_MODE_VALUE_DISABLED = 1;
+  NATIVE_TACTICAL_MODE_VALUE_ENABLED = 2;
+}
+
+message NativeTacticalCapabilities {
+  string profile = 1; // exact value: barc-live-tactical-v1
+  uint32 revision = 2; // exact value: 1
+  uint32 max_catalogue_entries = 3;
+  uint32 max_catalogue_page_entries = 4;
+  uint32 max_build_options_per_actor = 5;
+  uint32 max_queue_entries_per_actor = 6;
+  uint32 max_feature_references = 7;
+  uint32 max_factory_production_count = 8;
+  uint32 max_area_radius_world_units = 9;
+  uint32 max_command_descriptors_per_actor = 10;
+}
+
+message NativeContentIdentity {
+  string engine_version = 1;
+  string game_name = 2;
+  string game_version = 3;
+  bytes game_content_sha256 = 4;
+}
+
+message NativeResourceCost {
+  optional float metal = 1;
+  optional float energy = 2;
+  optional float build_time = 3;
+}
+
+message NativeUnitDefinition {
+  // Definition id zero is invalid; unknown definitions remain absent.
+  uint32 definition_id = 1;
+  string internal_name = 2;
+  string display_name = 3;
+  uint32 footprint_x_cells = 4;
+  uint32 footprint_z_cells = 5;
+  NativeResourceCost cost = 6;
+  repeated uint32 build_option_definition_ids = 7;
+}
+
+message TacticalCataloguePage {
+  string tactical_profile = 1;
+  uint32 tactical_revision = 2;
+  NativeContentIdentity content = 3;
+  bytes catalogue_id = 4;
+  uint64 catalogue_revision = 5;
+  uint32 page_index = 6;
+  uint32 page_count = 7;
+  bool complete = 8;
+  repeated NativeUnitDefinition definitions = 9;
+  // Empty only on the final page. Opaque and valid only for this catalogue id
+  // and revision; a missing page makes the assembled catalogue incomplete.
+  bytes next_page_token = 10;
+}
+
+message NativeFeatureReference {
+  // Feature id 0 is legal; presence of this message distinguishes absence.
+  uint32 id = 1;
+  uint64 lifetime = 2;
+}
+
+message NativeFeatureMetadata {
+  NativeFeatureReference reference = 1;
+  uint32 definition_id = 2;
+  float world_x = 3;
+  optional float elevation = 4;
+  float world_z = 5;
+  optional float reclaim_left = 6;
+}
+
+message NativeEconomyValue {
+  string resource_name = 1;
+  string unit = 2;
+  optional float current = 3;
+  optional float storage = 4;
+  optional float income_per_second = 5;
+  optional float usage_per_second = 6;
+}
+
+message NativeEconomySnapshot {
+  int32 perspective_team_id = 1;
+  uint32 sample_frame = 2;
+  NativeEconomyValue metal = 3;
+  NativeEconomyValue energy = 4;
+}
+
+message NativeTacticalCommandDescriptor {
+  NativeTacticalDescriptorKind kind = 1;
+  bool disabled = 2;
+  repeated uint32 allowed_definition_ids = 3;
+  // Filled only for selected, typed BAR modes. Raw command ids and arbitrary
+  // parameter vectors are never accepted from browser or guest input.
+  optional int32 native_command_id = 4;
+  repeated NativeTacticalModeValue allowed_mode_values = 5;
+  optional NativeTacticalModeValue observed_mode_value = 6;
+}
+
+message NativeObservedQueueEntry {
+  int32 native_tag = 1;
+  LiveSemanticAction action = 2;
+  optional uint32 definition_id = 3;
+  optional NativeUnitReference unit_target = 4;
+  optional NativeFeatureReference feature_target = 5;
+  optional float world_x = 6;
+  optional float world_z = 7;
+}
+
+message NativeActorTacticalMetadata {
+  NativeUnitReference actor = 1;
+  uint64 descriptor_revision = 2;
+  repeated NativeTacticalCommandDescriptor descriptors = 3;
+  repeated NativeObservedQueue queue = 4;
+}
+
+message NativeObservedQueue {
+  NativeQueueDomain domain = 1;
+  // Revision covers the complete ordered native tuple
+  // (type,id,options,tag,timeout,params), even though this wire projection is
+  // normalized and never grants raw options or arbitrary custom parameters.
+  uint64 revision = 2;
+  repeated NativeObservedQueueEntry entries = 3;
+  bool complete = 4;
+  optional bool repeat = 5;
+}
+
+message TacticalSnapshotMetadata {
+  NativeObservationBasis basis = 1;
+  bytes catalogue_id = 2;
+  uint64 catalogue_revision = 3;
+  NativeEconomySnapshot economy = 4;
+  repeated NativeActorTacticalMetadata actors = 5;
+  repeated NativeFeatureMetadata features = 6;
+}
+
+message NativePosition3 {
+  float x = 1;
+  optional float elevation = 2;
+  float z = 3;
+}
+
+message NativeBuildIntent {
+  uint32 definition_id = 1;
+  NativePosition3 position = 2;
+  NativeBuildFacing facing = 3;
+  NativeQueuePolicy queue_policy = 4;
+}
+
+message NativeFriendlyTargetIntent {
+  NativeUnitReference target = 1;
+  NativeQueuePolicy queue_policy = 2;
+}
+
+message NativeReclaimFeatureIntent {
+  NativeFeatureReference target = 1;
+  NativeQueuePolicy queue_policy = 2;
+}
+
+message NativeReclaimAreaIntent {
+  NativePosition3 center = 1;
+  float radius_world_units = 2;
+  NativeQueuePolicy queue_policy = 3;
+}
+
+message NativeFactoryProduceIntent {
+  uint32 definition_id = 1;
+  // Always 1 on this per-actor native child. Browser counts are expanded and
+  // reserved by the broker; engine modifier multipliers are never exposed.
+  uint32 count = 2;
+  NativeQueuePolicy queue_policy = 3;
+}
+
+message NativeSetRallyIntent {
+  NativePosition3 position = 1;
+}
+
+message NativeQueueInsertIntent {
+  int32 before_native_tag = 1;
+  LiveSemanticAction action = 2;
+  optional uint32 definition_id = 3;
+  optional NativePosition3 position = 4;
+  optional NativeUnitReference unit_target = 5;
+  optional NativeFeatureReference feature_target = 6;
+}
+
+message NativeQueueEditIntent {
+  uint64 expected_queue_revision = 1;
+  NativeQueueEditKind kind = 2;
+  NativeQueueDomain domain = 3;
+  oneof edit {
+    NativeQueueInsertIntent insert = 10;
+    int32 remove_native_tag = 11;
+    bool repeat = 12;
+  }
+}
+
+message NativeTacticalModeIntent {
+  NativeTacticalDescriptorKind kind = 1;
+  NativeTacticalModeValue value = 2;
+}
+
+message NativeTacticalCommand {
+  bytes catalogue_id = 1;
+  uint64 catalogue_revision = 2;
+  uint64 actor_descriptor_revision = 3;
+  NativeQueueDomain queue_domain = 4;
+  uint64 expected_queue_revision = 5;
+  oneof action {
+    NativeBuildIntent build = 10;
+    NativeFriendlyTargetIntent guard = 11;
+    NativeFriendlyTargetIntent repair = 12;
+    NativeFriendlyTargetIntent reclaim_unit = 13;
+    NativeReclaimFeatureIntent reclaim_feature = 14;
+    NativeReclaimAreaIntent reclaim_area = 15;
+    NativeFactoryProduceIntent factory_produce = 16;
+    NativeSetRallyIntent set_rally = 17;
+    NativeQueueEditIntent queue_edit = 18;
+    NativeTacticalModeIntent tactical_mode = 19;
+  }
 }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/CommandQueue.h"
+#include "grpc/CommandDispatch.h"
 #include "grpc/LiveControlState.h"
+#include "grpc/TacticalNativeState.h"
 
 #include <gtest/gtest.h>
 #include <memory>
@@ -78,7 +80,78 @@ TEST(LiveControlState, ExactBasisAndUnitZeroLiveAdmissionArePreserved) {
 	EXPECT_TRUE(drained[0].live); EXPECT_EQ(drained[0].authoritative_target_unit_id,0);
 	EXPECT_EQ(drained[0].client_command_id,9007199254740993ULL);
 	EXPECT_EQ(drained[0].live_actor.lifetime(),actor_life);
+	EXPECT_EQ(state->ClassifyBasis(basis),BasisLookupResult::kKnown);
 	auto altered=basis; altered.set_frame(31); EXPECT_FALSE(state->BasisKnown(altered));
+	EXPECT_EQ(state->ClassifyBasis(altered),BasisLookupResult::kValueMismatch);
+	auto absent=basis; absent.set_state_sequence(10);
+	EXPECT_EQ(state->ClassifyBasis(absent),BasisLookupResult::kSequenceAbsent);
+}
+
+TEST(LiveControlState, BasisRetentionKeepsNewestMonotonicWindowAndStrictIdentityExpiry) {
+	const auto t0=LiveControlState::Clock::time_point{};
+	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto actor=state->MarkOwnedPresent(0);
+	NativeObservationBasis newest_evicted;
+	NativeObservationBasis oldest_retained;
+	NativeObservationBasis newest;
+	for (std::uint64_t sequence=1; sequence<=1066; ++sequence) {
+		auto basis=state->RecordBasis(sequence,static_cast<std::uint32_t>(sequence),
+			10000+sequence,1,std::chrono::milliseconds(5),t0);
+		if (sequence==810) newest_evicted=basis;
+		if (sequence==811) oldest_retained=basis;
+		if (sequence==1066) newest=basis;
+	}
+	EXPECT_EQ(state->ClassifyBasis(newest_evicted),BasisLookupResult::kSequenceAbsent);
+	EXPECT_EQ(state->ClassifyBasis(oldest_retained),BasisLookupResult::kKnown);
+	EXPECT_EQ(state->ClassifyBasis(newest),BasisLookupResult::kKnown);
+	auto altered=newest; altered.set_frame(newest.frame()+1);
+	EXPECT_EQ(state->ClassifyBasis(altered),BasisLookupResult::kValueMismatch);
+
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=newest;
+	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor);
+	live.set_semantic_action(LIVE_SEMANTIC_ACTION_STOP);
+	live.set_remaining_basis_validity_ms(5); live.set_remaining_command_lifetime_ms(5);
+	live.set_remaining_lease_validity_ms(5);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_target_unit_id(0);
+	batch->set_client_command_id(1); batch->add_commands()->mutable_stop()->set_unit_id(0);
+	CommandQueue queue(nullptr,4);
+	const auto expired=AdmitLiveCommandBatch(queue,live,"live",*state,t0+std::chrono::milliseconds(5));
+	EXPECT_FALSE(expired.accepted()); EXPECT_EQ(expired.diagnostic_reason,"live_basis_expired");
+}
+
+TEST(LiveControlState, LiveAdmissionDiagnosticsIdentifyFixedPredicateWithoutPayload) {
+	const auto t0=LiveControlState::Clock::time_point{};
+	auto state=State(); Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto actor=state->MarkOwnedPresent(0);
+	const auto basis=state->RecordBasis(19,39,19000,1,std::chrono::milliseconds(500),t0);
+	auto base=[&]{ LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+		live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(actor);
+		live.set_semantic_action(LIVE_SEMANTIC_ACTION_STOP);
+		live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500); live.set_remaining_lease_validity_ms(500);
+		live.mutable_batch()->set_batch_seq(1); live.mutable_batch()->set_target_unit_id(0); live.mutable_batch()->set_client_command_id(1);
+		live.mutable_batch()->add_commands()->mutable_stop()->set_unit_id(0); return live; };
+	CommandQueue queue(nullptr,8);
+	auto accepted=AdmitLiveCommandBatch(queue,base(),"live",*state,t0);
+	EXPECT_TRUE(accepted.accepted()); EXPECT_TRUE(accepted.diagnostic_reason.empty());
+	auto actor_invalid=base(); actor_invalid.mutable_actor()->set_lifetime(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,actor_invalid,"live",*state,t0).diagnostic_reason,"live_actor_invalid");
+	auto target_mismatch=base(); target_mismatch.mutable_batch()->set_target_unit_id(1);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,target_mismatch,"live",*state,t0).diagnostic_reason,"live_target_mismatch");
+	auto mismatched_basis=base(); mismatched_basis.mutable_basis()->set_frame(40);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,mismatched_basis,"live",*state,t0).diagnostic_reason,"basis_value_mismatch");
+	auto absent_basis=base(); absent_basis.mutable_basis()->set_state_sequence(20);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,absent_basis,"live",*state,t0).diagnostic_reason,"basis_sequence_absent");
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,base(),"live",*state,t0+std::chrono::milliseconds(500)).diagnostic_reason,"live_basis_expired");
+	auto empty_window=base(); empty_window.set_remaining_command_lifetime_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_window,"live",*state,t0).diagnostic_reason,"live_command_lifetime_zero");
+	auto empty_basis=base(); empty_basis.set_remaining_basis_validity_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_basis,"live",*state,t0).diagnostic_reason,"live_basis_validity_zero");
+	auto empty_lease=base(); empty_lease.set_remaining_lease_validity_ms(0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,empty_lease,"live",*state,t0).diagnostic_reason,"live_lease_validity_zero");
+	auto semantic=base(); semantic.mutable_batch()->mutable_commands(0)->mutable_stop()->set_unit_id(1);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,semantic,"live",*state,t0).diagnostic_reason,"live_semantic_mismatch");
+	auto unarmed=State(); unarmed->MarkOwnedPresent(0); unarmed->RecordBasis(19,39,19000,1,std::chrono::milliseconds(500),t0);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,base(),"live",*unarmed,t0).diagnostic_reason,"live_authority_invalid");
 }
 
 TEST(LiveControlState, AppendIsExactlyShift32AndAttackRequiresTypedTarget) {
@@ -112,6 +185,12 @@ TEST(LiveControlState, DrainFenceUsesControlledClockAndCurrentActorLifetime) {
 	q.live_command_deadline=t0+std::chrono::milliseconds(400);
 	q.live_lease_deadline=t0+std::chrono::milliseconds(800);
 	EXPECT_TRUE(state->CheckQueuedCommand(q,t0+std::chrono::milliseconds(399)).ok);
+	auto mismatched_basis=q; mismatched_basis.live_basis.set_frame(41);
+	auto mismatched=state->CheckQueuedCommand(mismatched_basis,t0);
+	EXPECT_FALSE(mismatched.ok); EXPECT_EQ(mismatched.reason,LIVE_FENCE_BASIS_UNKNOWN);
+	auto absent_basis=q; absent_basis.live_basis.set_state_sequence(21);
+	auto absent=state->CheckQueuedCommand(absent_basis,t0);
+	EXPECT_FALSE(absent.ok); EXPECT_EQ(absent.reason,LIVE_FENCE_BASIS_UNKNOWN);
 	auto expired=state->CheckQueuedCommand(q,t0+std::chrono::milliseconds(400));
 	EXPECT_FALSE(expired.ok); EXPECT_EQ(expired.reason,LIVE_FENCE_COMMAND_EXPIRED);
 	state->MarkOwnedRemoved(0);
@@ -234,5 +313,251 @@ TEST(LiveControlState, ReplacedControlIncarnationCannotReuseAuthority) {
 	*fresh.mutable_binding()=replacement; fresh.set_control_sequence(1); fresh.set_lease_duration_ms(1000);
 	EXPECT_EQ(state->ApplyDirective(fresh,LiveControlState::Clock::time_point{}).disposition(),
 	          LIVE_CONTROL_ACK_RECORDED);
+}
+
+TEST(LiveControlState, TacticalFeatureQueueAndDescriptorFencesAreRechecked) {
+	auto state=State();
+	const auto actor_lifetime=state->MarkOwnedPresent(0);
+	state->RecordTacticalCatalogue("catalogue",7,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(7);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(actor_lifetime); actor->set_descriptor_revision(9);
+	auto* descriptor=actor->add_descriptors(); descriptor->set_kind(NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE);
+	auto* queue=actor->add_queue(); queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); queue->set_revision(11); queue->set_complete(true);
+	auto* feature=snapshot.add_features(); feature->mutable_reference()->set_id(0); feature->mutable_reference()->set_lifetime(55); feature->set_definition_id(3);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch batch; batch.mutable_actor()->set_id(0); batch.mutable_actor()->set_lifetime(actor_lifetime);
+	auto* tactical=batch.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(7);
+	tactical->set_actor_descriptor_revision(9); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(11);
+	tactical->mutable_reclaim_feature()->mutable_target()->set_id(0); tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(55);
+	tactical->mutable_reclaim_feature()->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	EXPECT_TRUE(state->CheckTacticalCommand(batch).ok);
+
+	tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(56);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_FEATURE_LIFETIME_CHANGED);
+	tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(55);
+	snapshot.mutable_actors(0)->mutable_queue(0)->set_revision(12); state->RecordTacticalSnapshot(snapshot);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_QUEUE_CHANGED);
+	snapshot.mutable_actors(0)->mutable_queue(0)->set_revision(11);
+	snapshot.mutable_actors(0)->mutable_descriptors(0)->set_disabled(true); state->RecordTacticalSnapshot(snapshot);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CAPABILITY_CHANGED);
+}
+
+TEST(LiveControlState, FeatureDestroyedBeforeDrainRefusesStaleReclaimAndFreshReusePasses) {
+	auto state = State();
+	const auto t0 = LiveControlState::Clock::time_point{};
+	Apply(*state, LIVE_CONTROL_DIRECTIVE_KIND_ARM, 1);
+	const auto actor_lifetime = state->MarkOwnedPresent(0);
+	const auto basis = state->RecordBasis(
+		90, 100, 9000, 1, std::chrono::milliseconds(500), t0);
+	state->RecordTacticalCatalogue("catalogue", 17, true);
+
+	FeatureLifetimeLedger ledger;
+	const VisibleFeatureSample original{7, 70, 1.0f, 2.0f, 3.0f};
+	ASSERT_TRUE(ledger.ReplaceBoundedCompleteVisibleSnapshot(90, 1, {original}));
+	const auto stale = ledger.Reference(7);
+	ASSERT_TRUE(stale.has_value());
+
+	TacticalSnapshotMetadata snapshot;
+	snapshot.set_catalogue_id("catalogue");
+	snapshot.set_catalogue_revision(17);
+	auto* actor = snapshot.add_actors();
+	actor->mutable_actor()->set_id(0);
+	actor->mutable_actor()->set_lifetime(actor_lifetime);
+	actor->set_descriptor_revision(19);
+	actor->add_descriptors()->set_kind(NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE);
+	auto* queue = actor->add_queue();
+	queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER);
+	queue->set_revision(23);
+	queue->set_complete(true);
+	auto* feature = snapshot.add_features();
+	feature->mutable_reference()->set_id(stale->id);
+	feature->mutable_reference()->set_lifetime(stale->lifetime);
+	feature->set_definition_id(stale->def_id);
+	state->RecordTacticalSnapshot(snapshot);
+
+	QueuedCommand queued;
+	queued.live = true;
+	queued.live_binding = Binding(1);
+	queued.live_basis = basis;
+	queued.live_actor.set_id(0);
+	queued.live_actor.set_lifetime(actor_lifetime);
+	queued.live_semantic_action = LIVE_SEMANTIC_ACTION_RECLAIM_FEATURE;
+	queued.live_basis_deadline = queued.live_command_deadline
+		= queued.live_lease_deadline = t0 + std::chrono::milliseconds(500);
+	queued.live_tactical_command.emplace();
+	auto& tactical = *queued.live_tactical_command;
+	tactical.set_catalogue_id("catalogue");
+	tactical.set_catalogue_revision(17);
+	tactical.set_actor_descriptor_revision(19);
+	tactical.set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER);
+	tactical.set_expected_queue_revision(23);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_id(stale->id);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_lifetime(stale->lifetime);
+	tactical.mutable_reclaim_feature()->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	ASSERT_TRUE(state->CheckQueuedCommand(queued, t0).ok);
+
+	ledger.MarkDestroyed(7);
+	// The cached tactical snapshot still admits the queued wire reference. The
+	// engine-thread ledger fence must therefore be the refusing boundary.
+	ASSERT_TRUE(state->CheckQueuedCommand(queued, t0).ok);
+	int engine_calls = 0;
+	auto result = state->DispatchGuarded(queued, [&] {
+		return DispatchCurrentFeatureReclaim(
+			&ledger, *stale, original, [&] { ++engine_calls; });
+	}, t0);
+	EXPECT_FALSE(result.ok);
+	EXPECT_EQ(result.reason, LIVE_FENCE_CAPABILITY_CHANGED);
+	EXPECT_EQ(engine_calls, 0);
+
+	const VisibleFeatureSample reused{7, 71, 4.0f, 5.0f, 6.0f};
+	ASSERT_TRUE(ledger.ReplaceBoundedCompleteVisibleSnapshot(91, 1, {reused}));
+	const auto fresh = ledger.Reference(7);
+	ASSERT_TRUE(fresh.has_value());
+	EXPECT_NE(fresh->lifetime, stale->lifetime);
+	snapshot.mutable_features(0)->mutable_reference()->set_lifetime(fresh->lifetime);
+	snapshot.mutable_features(0)->set_definition_id(fresh->def_id);
+	state->RecordTacticalSnapshot(snapshot);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_lifetime(fresh->lifetime);
+	result = state->DispatchGuarded(queued, [&] {
+		return DispatchCurrentFeatureReclaim(
+			&ledger, *fresh, reused, [&] { ++engine_calls; });
+	}, t0);
+	EXPECT_TRUE(result.ok);
+	EXPECT_EQ(engine_calls, 1);
+}
+
+TEST(LiveControlState, TacticalBuildDefinitionBusyPolicyAndRallyFailClosed) {
+	auto state=State(); const auto lifetime=state->MarkOwnedPresent(0);
+	state->RecordTacticalCatalogue("catalogue",8,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(8);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(10);
+	auto* build=actor->add_descriptors(); build->set_kind(NATIVE_TACTICAL_DESCRIPTOR_BUILD); build->add_allowed_definition_ids(42);
+	auto* queue=actor->add_queue(); queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); queue->set_revision(12); queue->set_complete(true); queue->add_entries()->set_native_tag(5);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch batch; batch.mutable_actor()->set_id(0); batch.mutable_actor()->set_lifetime(lifetime);
+	auto* tactical=batch.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(8); tactical->set_actor_descriptor_revision(10); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(12);
+	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(10); intent->mutable_position()->set_z(20); intent->set_facing(NATIVE_BUILD_FACING_SOUTH); intent->set_queue_policy(NATIVE_QUEUE_POLICY_REJECT_IF_BUSY);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_PARAMETER_REFUSED);
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE); EXPECT_TRUE(state->CheckTacticalCommand(batch).ok);
+	intent->set_definition_id(43); EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_PARAMETER_REFUSED);
+
+	tactical->mutable_set_rally()->mutable_position()->set_x(1);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CAPABILITY_CHANGED);
+	state->RecordTacticalCatalogue("catalogue",8,false);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CATALOGUE_INCOMPLETE);
+}
+
+TEST(LiveControlState, MatchedRallyQueueRequiresCompleteExactRevisionAtFinalFence) {
+	auto state=State(); const auto lifetime=state->MarkOwnedPresent(4);
+	state->RecordTacticalCatalogue("catalogue",81,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(81);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(4);
+	actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(82);
+	actor->add_descriptors()->set_kind(NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY);
+	auto* rally=actor->add_queue(); rally->set_domain(NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);
+	rally->set_revision(83); rally->set_complete(true);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch batch; batch.mutable_actor()->set_id(4); batch.mutable_actor()->set_lifetime(lifetime);
+	auto* tactical=batch.mutable_tactical_command(); tactical->set_catalogue_id("catalogue");
+	tactical->set_catalogue_revision(81); tactical->set_actor_descriptor_revision(82);
+	tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);
+	tactical->set_expected_queue_revision(83);
+	tactical->mutable_set_rally()->mutable_position()->set_x(100);
+	tactical->mutable_set_rally()->mutable_position()->set_z(200);
+	EXPECT_TRUE(state->CheckTacticalCommand(batch).ok);
+
+	tactical->set_expected_queue_revision(84);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_QUEUE_CHANGED);
+	tactical->set_expected_queue_revision(83);
+	snapshot.mutable_actors(0)->mutable_queue(0)->set_complete(false);
+	state->RecordTacticalSnapshot(snapshot);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_QUEUE_CHANGED);
+}
+
+TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOptions) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto lifetime=state->MarkOwnedPresent(0);
+	const auto basis=state->RecordBasis(80,100,8000,1,std::chrono::milliseconds(500),t0);
+	state->RecordTacticalCatalogue("catalogue",9,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(9);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(13);
+	auto* descriptor=actor->add_descriptors(); descriptor->set_kind(NATIVE_TACTICAL_DESCRIPTOR_BUILD); descriptor->add_allowed_definition_ids(42);
+	auto* observed=actor->add_queue(); observed->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); observed->set_revision(14); observed->set_complete(true);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(lifetime); live.set_semantic_action(LIVE_SEMANTIC_ACTION_BUILD);
+	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500); live.set_remaining_lease_validity_ms(500);
+	auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(9); tactical->set_actor_descriptor_revision(13); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(14);
+	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(100); intent->mutable_position()->set_elevation(5); intent->mutable_position()->set_z(200); intent->set_queue_policy(NATIVE_QUEUE_POLICY_APPEND);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1); batch->set_target_unit_id(0);
+	auto* legacy=batch->add_commands()->mutable_build_unit(); legacy->set_unit_id(0); legacy->set_to_build_unit_def_id(42); legacy->set_options(32); legacy->mutable_build_position()->set_x(100); legacy->mutable_build_position()->set_y(5); legacy->mutable_build_position()->set_z(200);
+	CommandQueue queue(nullptr,8);
+	const std::pair<NativeBuildFacing, int> facings[] = {
+		{NATIVE_BUILD_FACING_NORTH, 2},
+		{NATIVE_BUILD_FACING_EAST, 1},
+		{NATIVE_BUILD_FACING_SOUTH, 0},
+		{NATIVE_BUILD_FACING_WEST, 3},
+	};
+	std::uint64_t sequence = 1;
+	for (const auto& [protocol, engine] : facings) {
+		intent->set_facing(protocol); legacy->set_facing(engine);
+		batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+		EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	}
+	intent->set_facing(static_cast<NativeBuildFacing>(99)); legacy->set_facing(-1);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+	auto invalid_facing=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(invalid_facing.accepted()); EXPECT_EQ(invalid_facing.diagnostic_reason,"build_semantic_mismatch");
+	intent->set_facing(NATIVE_BUILD_FACING_SOUTH); legacy->set_facing(2);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+	auto wrong_engine_facing=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(wrong_engine_facing.accepted()); EXPECT_EQ(wrong_engine_facing.diagnostic_reason,"build_semantic_mismatch");
+	legacy->set_facing(0); legacy->mutable_build_position()->set_x(101);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence++);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	legacy->mutable_build_position()->set_x(100); legacy->set_options(0);
+	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+}
+
+TEST(LiveControlState, RallyAdmissionRequiresExactLegacyMoveAndFreshRallyQueue) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto lifetime=state->MarkOwnedPresent(4);
+	const auto basis=state->RecordBasis(90,110,9000,1,std::chrono::milliseconds(500),t0);
+	state->RecordTacticalCatalogue("catalogue",91,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(91);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(4);
+	actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(92);
+	actor->add_descriptors()->set_kind(NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY);
+	auto* observed=actor->add_queue(); observed->set_domain(NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);
+	observed->set_revision(93); observed->set_complete(true); state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+	live.mutable_actor()->set_id(4); live.mutable_actor()->set_lifetime(lifetime);
+	live.set_semantic_action(LIVE_SEMANTIC_ACTION_SET_RALLY);
+	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500);
+	live.set_remaining_lease_validity_ms(500);
+	auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue");
+	tactical->set_catalogue_revision(91); tactical->set_actor_descriptor_revision(92);
+	tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);
+	tactical->set_expected_queue_revision(93);
+	tactical->mutable_set_rally()->mutable_position()->set_x(100);
+	tactical->mutable_set_rally()->mutable_position()->set_elevation(5);
+	tactical->mutable_set_rally()->mutable_position()->set_z(200);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1);
+	batch->set_target_unit_id(4); auto* move=batch->add_commands()->mutable_move_unit();
+	move->set_unit_id(4); move->set_options(0); move->mutable_to_position()->set_x(100);
+	move->mutable_to_position()->set_y(5); move->mutable_to_position()->set_z(200);
+	CommandQueue queue(nullptr,3);
+	EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	live.mutable_batch()->set_batch_seq(2); live.mutable_batch()->set_client_command_id(2);
+	live.mutable_batch()->mutable_commands(0)->mutable_move_unit()->set_options(32);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	live.mutable_batch()->set_batch_seq(3); live.mutable_batch()->set_client_command_id(3);
+	live.mutable_batch()->mutable_commands(0)->mutable_move_unit()->set_options(0);
+	live.mutable_tactical_command()->set_expected_queue_revision(94);
+	auto stale_queue=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	EXPECT_FALSE(stale_queue.accepted()); EXPECT_EQ(stale_queue.diagnostic_reason,"tactical_fence_queue_changed");
 }
 } // namespace

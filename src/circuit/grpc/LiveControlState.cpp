@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -173,10 +174,9 @@ LiveFenceResult LiveControlState::CheckQueuedCommandLocked(
 		return {false, ::highbar::v1::LIVE_FENCE_AUTHORITY_NOT_CONFIRMED};
 	if (revoked_) return {false, ::highbar::v1::LIVE_FENCE_AUTHORITY_REVOKED};
 	if (now >= lease_deadline_) return {false, ::highbar::v1::LIVE_FENCE_LEASE_EXPIRED};
-	const auto basis_it = bases_.find(q.live_basis.state_sequence());
-	if (basis_it == bases_.end()
-	    || basis_it->second.basis.SerializeAsString() != q.live_basis.SerializeAsString())
+	if (ClassifyBasisLocked(q.live_basis) != BasisLookupResult::kKnown)
 		return {false, ::highbar::v1::LIVE_FENCE_BASIS_UNKNOWN};
+	const auto basis_it = bases_.find(q.live_basis.state_sequence());
 	if (now >= basis_it->second.expires_at)
 		return {false, ::highbar::v1::LIVE_FENCE_BASIS_EXPIRED};
 	if (now >= q.live_basis_deadline) return {false, ::highbar::v1::LIVE_FENCE_BASIS_EXPIRED};
@@ -193,6 +193,140 @@ LiveFenceResult LiveControlState::CheckQueuedCommandLocked(
 			return {false, ::highbar::v1::LIVE_FENCE_TARGET_NOT_VISUAL};
 		if (target->second.lifetime != q.live_attack_target->lifetime())
 			return {false, ::highbar::v1::LIVE_FENCE_TARGET_LIFETIME_CHANGED};
+	}
+	if (q.live_tactical_command) {
+		::highbar::v1::LiveCommandBatch batch;
+		*batch.mutable_actor() = q.live_actor;
+		*batch.mutable_tactical_command() = *q.live_tactical_command;
+		auto tactical = CheckTacticalCommandLocked(batch);
+		if (!tactical.ok) return tactical;
+	}
+	return {true, ::highbar::v1::LIVE_FENCE_REASON_UNSPECIFIED};
+}
+
+void LiveControlState::RecordTacticalCatalogue(
+		const std::string& id, std::uint64_t revision, bool complete) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	tactical_catalogue_id_ = id;
+	tactical_catalogue_revision_ = revision;
+	tactical_catalogue_complete_ = complete;
+	if (!complete) tactical_snapshot_.reset();
+}
+
+void LiveControlState::RecordTacticalSnapshot(
+		const ::highbar::v1::TacticalSnapshotMetadata& snapshot) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (tactical_catalogue_complete_
+	    && snapshot.catalogue_id() == tactical_catalogue_id_
+	    && snapshot.catalogue_revision() == tactical_catalogue_revision_) {
+		tactical_snapshot_ = snapshot;
+	}
+}
+
+LiveFenceResult LiveControlState::CheckTacticalCommand(
+		const ::highbar::v1::LiveCommandBatch& batch) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return CheckTacticalCommandLocked(batch);
+}
+
+LiveFenceResult LiveControlState::CheckTacticalCommandLocked(
+		const ::highbar::v1::LiveCommandBatch& batch) const {
+	if (!batch.has_tactical_command())
+		return {false, ::highbar::v1::LIVE_FENCE_TACTICAL_PROFILE_REQUIRED};
+	const auto& command = batch.tactical_command();
+	if (!tactical_catalogue_complete_ || !tactical_snapshot_)
+		return {false, ::highbar::v1::LIVE_FENCE_CATALOGUE_INCOMPLETE};
+	if (command.catalogue_id() != tactical_catalogue_id_
+	    || command.catalogue_revision() != tactical_catalogue_revision_)
+		return {false, ::highbar::v1::LIVE_FENCE_CATALOGUE_CHANGED};
+	const auto actor = std::find_if(tactical_snapshot_->actors().begin(),
+		tactical_snapshot_->actors().end(), [&](const auto& value) {
+			return value.has_actor() && value.actor().id() == batch.actor().id()
+				&& value.actor().lifetime() == batch.actor().lifetime();
+		});
+	if (actor == tactical_snapshot_->actors().end()
+	    || actor->descriptor_revision() != command.actor_descriptor_revision())
+		return {false, ::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED};
+	::highbar::v1::NativeTacticalDescriptorKind required =
+		::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_KIND_UNSPECIFIED;
+	switch (command.action_case()) {
+	case ::highbar::v1::NativeTacticalCommand::kBuild: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BUILD; break;
+	case ::highbar::v1::NativeTacticalCommand::kGuard: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_GUARD; break;
+	case ::highbar::v1::NativeTacticalCommand::kRepair: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_REPAIR; break;
+	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_UNIT; break;
+	case ::highbar::v1::NativeTacticalCommand::kReclaimFeature: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE; break;
+	case ::highbar::v1::NativeTacticalCommand::kReclaimArea: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_AREA; break;
+	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_FACTORY_PRODUCE; break;
+	case ::highbar::v1::NativeTacticalCommand::kSetRally: required=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY; break;
+	case ::highbar::v1::NativeTacticalCommand::kQueueEdit:
+		required = command.queue_edit().kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT
+			? ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_INSERT
+			: command.queue_edit().kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG
+			? ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REMOVE
+			: ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REPEAT; break;
+	case ::highbar::v1::NativeTacticalCommand::kTacticalMode: required=command.tactical_mode().kind(); break;
+	default: return {false, ::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	}
+	const auto descriptor=std::find_if(actor->descriptors().begin(),actor->descriptors().end(),[&](const auto& d){return d.kind()==required&&!d.disabled();});
+	if(descriptor==actor->descriptors().end())return {false,::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED};
+	const auto queue = std::find_if(actor->queue().begin(), actor->queue().end(),
+		[&](const auto& value) { return value.domain() == command.queue_domain(); });
+	if (queue == actor->queue().end() || !queue->complete()
+	    || queue->revision() != command.expected_queue_revision())
+		return {false, ::highbar::v1::LIVE_FENCE_QUEUE_CHANGED};
+	auto owned_ref_ok=[&](const auto& ref){const auto it=owned_.find(ref.id());return ref.lifetime()!=0&&it!=owned_.end()&&it->second.present&&it->second.lifetime==ref.lifetime();};
+	auto feature_ref_ok=[&](const auto& ref){return ref.lifetime()!=0&&std::any_of(tactical_snapshot_->features().begin(),tactical_snapshot_->features().end(),[&](const auto& f){return f.has_reference()&&f.reference().id()==ref.id()&&f.reference().lifetime()==ref.lifetime();});};
+	auto allowed_definition=[&](std::uint32_t id){return id!=0&&std::any_of(actor->descriptors().begin(),actor->descriptors().end(),[&](const auto& value){return value.kind()==required&&!value.disabled()&&std::find(value.allowed_definition_ids().begin(),value.allowed_definition_ids().end(),id)!=value.allowed_definition_ids().end();});};
+	auto actor_allows_definition=[&](std::uint32_t id){return id!=0&&std::any_of(actor->descriptors().begin(),actor->descriptors().end(),[&](const auto& value){return !value.disabled()&&std::find(value.allowed_definition_ids().begin(),value.allowed_definition_ids().end(),id)!=value.allowed_definition_ids().end();});};
+	auto finite_position=[](const auto& p){return std::isfinite(p.x())&&std::isfinite(p.z())&&(!p.has_elevation()||std::isfinite(p.elevation()));};
+	auto policy_ok=[&](::highbar::v1::NativeQueuePolicy policy){
+		if (policy==::highbar::v1::NATIVE_QUEUE_POLICY_REPLACE||policy==::highbar::v1::NATIVE_QUEUE_POLICY_APPEND)return true;
+		return policy==::highbar::v1::NATIVE_QUEUE_POLICY_REJECT_IF_BUSY&&queue->entries().empty();
+	};
+	if (command.action_case()==::highbar::v1::NativeTacticalCommand::kBuild
+	    && (!allowed_definition(command.build().definition_id())||!finite_position(command.build().position())
+	        || command.build().facing()==::highbar::v1::NATIVE_BUILD_FACING_UNSPECIFIED||!policy_ok(command.build().queue_policy())))
+		return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kGuard&&!owned_ref_ok(command.guard().target()))return {false,::highbar::v1::LIVE_FENCE_TARGET_NOT_FRIENDLY};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kRepair&&!owned_ref_ok(command.repair().target()))return {false,::highbar::v1::LIVE_FENCE_TARGET_NOT_FRIENDLY};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimUnit&&!owned_ref_ok(command.reclaim_unit().target()))return {false,::highbar::v1::LIVE_FENCE_TARGET_NOT_FRIENDLY};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kGuard&&!policy_ok(command.guard().queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kRepair&&!policy_ok(command.repair().queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimUnit&&!policy_ok(command.reclaim_unit().queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimFeature){const auto& ref=command.reclaim_feature().target();if(!feature_ref_ok(ref))return {false,::highbar::v1::LIVE_FENCE_FEATURE_LIFETIME_CHANGED};if(!policy_ok(command.reclaim_feature().queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimArea){const auto& body=command.reclaim_area();if(!finite_position(body.center())||!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>2048||!policy_ok(body.queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kFactoryProduce&&
+	   (command.factory_produce().count()!=1||!allowed_definition(command.factory_produce().definition_id())||!policy_ok(command.factory_produce().queue_policy())))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kSetRally
+	    && !finite_position(command.set_rally().position()))
+		return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kTacticalMode){const auto value=command.tactical_mode().value();const int expected=required==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY?34571:required==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE?37382:0;if(std::find(descriptor->allowed_mode_values().begin(),descriptor->allowed_mode_values().end(),value)==descriptor->allowed_mode_values().end()||!descriptor->has_native_command_id()||descriptor->native_command_id()!=expected)return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
+	if (command.action_case() == ::highbar::v1::NativeTacticalCommand::kQueueEdit) {
+		const auto& edit = command.queue_edit();
+		if (edit.domain() != command.queue_domain()
+		    || edit.expected_queue_revision() != command.expected_queue_revision())
+			return {false, ::highbar::v1::LIVE_FENCE_QUEUE_CHANGED};
+		if (edit.domain() == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY
+		    && edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT)
+			return {false, ::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+		if (edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG
+		    || edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT) {
+			const auto tag = edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG
+				? edit.remove_native_tag() : edit.insert().before_native_tag();
+			const auto found = std::any_of(queue->entries().begin(), queue->entries().end(),
+				[tag](const auto& entry) { return entry.native_tag() == tag; });
+			if (!found) return {false, ::highbar::v1::LIVE_FENCE_QUEUE_TAG_CHANGED};
+		}
+		if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT) {
+			if (!edit.has_insert() || edit.insert().has_feature_target())
+				return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+			if (edit.insert().has_unit_target()&&!owned_ref_ok(edit.insert().unit_target()))
+				return {false,::highbar::v1::LIVE_FENCE_TARGET_NOT_FRIENDLY};
+			if (edit.insert().has_definition_id()&&!actor_allows_definition(edit.insert().definition_id()))
+				return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+			if (edit.insert().has_position()&&!finite_position(edit.insert().position()))
+				return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+		}
 	}
 	return {true, ::highbar::v1::LIVE_FENCE_REASON_UNSPECIFIED};
 }
@@ -255,21 +389,35 @@ std::string LiveControlState::BasisToken(std::uint64_t seq, std::uint64_t ns) {
 	b.set_process_incarnation(process_incarnation_); b.set_state_channel_incarnation(state_channel_incarnation_);
 	b.set_snapshot_send_monotonic_ns(ns); b.set_effective_cadence_frames(cadence);
 	bases_[seq] = {b, emitted_at, emitted_at + maximum_age};
-	while (bases_.size() > kMaxBases) bases_.erase(bases_.begin());
+	while (bases_.size() > kMaxBases) {
+		auto oldest = std::min_element(bases_.begin(), bases_.end(),
+			[](const auto& a, const auto& z) { return a.first < z.first; });
+		bases_.erase(oldest);
+	}
 	return b;
 }
 
 std::optional<LiveControlState::Clock::time_point> LiveControlState::BasisExpiry(
 		const ::highbar::v1::NativeObservationBasis& b) const {
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (ClassifyBasisLocked(b) != BasisLookupResult::kKnown) return std::nullopt;
 	auto it = bases_.find(b.state_sequence());
-	if (it == bases_.end() || it->second.basis.SerializeAsString() != b.SerializeAsString())
-		return std::nullopt;
 	return it->second.expires_at;
 }
+BasisLookupResult LiveControlState::ClassifyBasis(
+		const ::highbar::v1::NativeObservationBasis& b) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return ClassifyBasisLocked(b);
+}
+BasisLookupResult LiveControlState::ClassifyBasisLocked(
+		const ::highbar::v1::NativeObservationBasis& b) const {
+	auto it = bases_.find(b.state_sequence());
+	if (it == bases_.end()) return BasisLookupResult::kSequenceAbsent;
+	return it->second.basis.SerializeAsString() == b.SerializeAsString()
+		? BasisLookupResult::kKnown : BasisLookupResult::kValueMismatch;
+}
 bool LiveControlState::BasisKnown(const ::highbar::v1::NativeObservationBasis& b) const {
-	std::lock_guard<std::mutex> lock(mutex_); auto it = bases_.find(b.state_sequence());
-	return it != bases_.end() && it->second.basis.SerializeAsString() == b.SerializeAsString();
+	return ClassifyBasis(b) == BasisLookupResult::kKnown;
 }
 std::optional<std::vector<::highbar::v1::NativeLiveUnitMetadata>>
 LiveControlState::SnapshotUnitMetadata() {

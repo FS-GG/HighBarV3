@@ -19,6 +19,8 @@
 #pragma once
 
 #include "highbar/commands.pb.h"
+#include "highbar/live_control.pb.h"
+#include "grpc/TacticalDispatchDiagnostic.h"
 
 #include <cstdint>
 #include <optional>
@@ -30,6 +32,19 @@ class CEnemyInfo;
 }  // namespace circuit
 
 namespace circuit::grpc {
+
+class FeatureLifetimeLedger;
+
+constexpr int EngineFacingForNativeBuild(
+		::highbar::v1::NativeBuildFacing facing) {
+	switch (facing) {
+	case ::highbar::v1::NATIVE_BUILD_FACING_NORTH: return 2;
+	case ::highbar::v1::NATIVE_BUILD_FACING_EAST: return 1;
+	case ::highbar::v1::NATIVE_BUILD_FACING_SOUTH: return 0;
+	case ::highbar::v1::NATIVE_BUILD_FACING_WEST: return 3;
+	default: return -1;
+	}
+}
 
 inline bool IsGameWideCommand(const ::highbar::v1::AICommand& cmd) {
 	using C = ::highbar::v1::AICommand;
@@ -84,5 +99,13 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
                      ::circuit::CCircuitUnit* unit,
                      const ::highbar::v1::AICommand& cmd,
                      ::circuit::CEnemyInfo* selected_attack_target = nullptr);
+
+// `refusal_reason` is meaningful only when dispatch returns false.  It feeds
+// the existing opt-in coordinator trace with a fixed, payload-free reason label.
+bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
+	::circuit::CCircuitUnit* unit,
+	const ::highbar::v1::NativeTacticalCommand& command,
+	const FeatureLifetimeLedger* feature_lifetimes,
+	TacticalDispatchRefusalReason* refusal_reason = nullptr);
 
 }  // namespace circuit::grpc

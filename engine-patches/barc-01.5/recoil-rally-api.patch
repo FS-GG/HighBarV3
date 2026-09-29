@@ -1,0 +1,474 @@
+diff --git a/AI/Wrappers/CUtils/bin/commonOOCallback.awk b/AI/Wrappers/CUtils/bin/commonOOCallback.awk
+index e228c1d..78a29cc 100755
+--- a/AI/Wrappers/CUtils/bin/commonOOCallback.awk
++++ b/AI/Wrappers/CUtils/bin/commonOOCallback.awk
+@@ -171,7 +171,7 @@ function part_getFetcherIndArg(metaInfo_p) {
+ 	fetcherIndArgPart_p = part_getFetcherPart(metaInfo_p);
+ 
+ 	# remove post indices arg
+-	if (match(/:/, fetcherIndArgPart_p)) {
++	if (match(fetcherIndArgPart_p, /:/)) {
+ 		sub(/.*:/, "", fetcherIndArgPart_p);
+ 	} else {
+ 		fetcherIndArgPart_p = "";
+@@ -224,6 +224,7 @@ if (isIntNameDifferent) { print("isIntNameDifferent: " ancestorsPlusName_p " " m
+ 		if (isIntNameDifferent) {
+ 			intName_p = metaInfo_p;
+ 			sub(/FETCHER:MULTI:[^: ]*:[^: -]*-/, "", intName_p);
++			sub(/:.*/, "", intName_p);
+ 		} else {
+ 			intName_p = part_getClassName(ancestorsPlusName_p, metaInfo_p);
+ 		}
+@@ -248,8 +249,12 @@ function part_getIndicesArgs(clsName_p, implClsName_p, params_p, metaComment_p,
+ 			indicesArg_p = "int " indicesArg_p;
+ 		}
+ 	} else {
+-		tmp_indArg_p = clsName_p;
+-		tmp_indArg_p = "int " lowerize(tmp_indArg_p) "Id";
++		if (implClsName_p == "CurrentCommandByType") {
++			tmp_indArg_p = "int commandId";
++		} else {
++			tmp_indArg_p = clsName_p;
++			tmp_indArg_p = "int " lowerize(tmp_indArg_p) "Id";
++		}
+ #if (params_p != "") { print("params_p: " params_p); }
+ 		if (match(params_p, tmp_indArg_p)) {
+ 			indicesArg_p = tmp_indArg_p;
+@@ -823,4 +828,3 @@ function wrappFunctionPlusMeta(retType, fullName, params, metaComment) {
+ END {
+ 	# finalize things
+ }
+-
+diff --git a/AI/Wrappers/Cpp/CMakeLists.txt b/AI/Wrappers/Cpp/CMakeLists.txt
+index 4fcdd36..1d7a8b2 100644
+--- a/AI/Wrappers/Cpp/CMakeLists.txt
++++ b/AI/Wrappers/Cpp/CMakeLists.txt
+@@ -66,6 +66,7 @@ if    (BUILD_${myName}_AIWRAPPER)
+ 	set(myGeneratedWrapperSources
+ 		${myGeneratedSourceDir}/AbstractCheats.cpp
+ 		${myGeneratedSourceDir}/AbstractCommand.cpp
++		${myGeneratedSourceDir}/AbstractCurrentCommandByType.cpp
+ 		${myGeneratedSourceDir}/AbstractCommandDescription.cpp
+ 		${myGeneratedSourceDir}/AbstractDamage.cpp
+ 		${myGeneratedSourceDir}/AbstractDataDirs.cpp
+@@ -106,6 +107,7 @@ if    (BUILD_${myName}_AIWRAPPER)
+ 		${myGeneratedSourceDir}/AbstractWeapon.cpp
+ 		${myGeneratedSourceDir}/StubCheats.cpp
+ 		${myGeneratedSourceDir}/StubCommand.cpp
++		${myGeneratedSourceDir}/StubCurrentCommandByType.cpp
+ 		${myGeneratedSourceDir}/StubCommandDescription.cpp
+ 		${myGeneratedSourceDir}/StubDamage.cpp
+ 		${myGeneratedSourceDir}/StubDataDirs.cpp
+@@ -146,6 +148,7 @@ if    (BUILD_${myName}_AIWRAPPER)
+ 		${myGeneratedSourceDir}/StubWeapon.cpp
+ 		${myGeneratedSourceDir}/WrappCheats.cpp
+ 		${myGeneratedSourceDir}/WrappCurrentCommand.cpp
++		${myGeneratedSourceDir}/WrappCurrentCommandByType.cpp
+ 		${myGeneratedSourceDir}/WrappDamage.cpp
+ 		${myGeneratedSourceDir}/WrappDataDirs.cpp
+ 		${myGeneratedSourceDir}/WrappDebug.cpp
+diff --git a/AI/Wrappers/Cpp/bin/wrappCallback.awk b/AI/Wrappers/Cpp/bin/wrappCallback.awk
+index 2cde00a..42718f3 100755
+--- a/AI/Wrappers/Cpp/bin/wrappCallback.awk
++++ b/AI/Wrappers/Cpp/bin/wrappCallback.awk
+@@ -850,7 +850,15 @@ function printMember(fullName_m, memName_m, additionalIndices_m) {
+ 	if (match(metaComment, /FETCHER:MULTI:NUM:/)) {
+ 		# convert this: FETCHER:MULTI:NUM:Resource
+ 		# to this:      ARRAY:RETURN_SIZE->Resource
+-		sub(/FETCHER:MULTI:NUM:/, "ARRAY:RETURN_SIZE->", metaComment);
++		_mc_pre = metaComment;
++		sub(/FETCHER:MULTI:NUM:.*$/, "", _mc_pre);
++		_mc_fet = metaComment;
++		sub(/^.*FETCHER:MULTI:NUM:/, "", _mc_fet);
++		sub(/[ \t].*$/, "", _mc_fet);
++		sub(/:[^:]*$/, "", _mc_fet);
++		_mc_post = metaComment;
++		sub(/^.*FETCHER:MULTI:NUM:[^ \t]*/, "", _mc_post);
++		metaComment = _mc_pre "ARRAY:RETURN_SIZE->" _mc_fet _mc_post;
+ 	}
+ 	if (match(metaComment, /REF:MULTI:/)) {
+ 		# convert this: REF:MULTI:unitDefIds->UnitDef
+@@ -1251,6 +1259,11 @@ function printMember(fullName_m, memName_m, additionalIndices_m) {
+ 				conversionCode_pre = conversionCode_pre "\t\t" _arraySizeMaxPaNa " = INT_MAX;" "\n";
+ 				conversionCode_pre = conversionCode_pre "\t\t" _arrayPaNa " = NULL;" "\n";
+ 				conversionCode_pre = conversionCode_pre "\t\t" _arraySizeVar " = " myBridgePrefix functionName_m "(" innerParams ");" "\n";
++				if (functionName_m == "Unit_CurrentCommandByType_getParams") {
++					conversionCode_pre = conversionCode_pre "\t\t" "if (" _arraySizeVar " < 0) {" "\n";
++					conversionCode_pre = conversionCode_pre "\t\t\t" "throw CallbackAIException(\"GetParams\", " _arraySizeVar ");" "\n";
++					conversionCode_pre = conversionCode_pre "\t\t" "}" "\n";
++				}
+ 				conversionCode_pre = conversionCode_pre "\t\t" _arraySizeMaxPaNa " = " _arraySizeVar ";" "\n";
+ 				conversionCode_pre = conversionCode_pre "\t\t" _arraySizeRaw " = " _arraySizeVar ";" "\n";
+ 				if (_isF3) {
+@@ -1271,6 +1284,11 @@ function printMember(fullName_m, memName_m, additionalIndices_m) {
+ 
+ 		if (_isRetSize) {
+ 			conversionCode_post = conversionCode_post "\t\t" _arraySizeVar " = " retVar_out_m ";" "\n";
++			if (functionName_m == "Unit_getCurrentCommandsByType") {
++				conversionCode_post = conversionCode_post "\t\t" "if (" _arraySizeVar " < 0) {" "\n";
++				conversionCode_post = conversionCode_post "\t\t\t" "throw CallbackAIException(\"GetCurrentCommandsByType\", " _arraySizeVar ");" "\n";
++				conversionCode_post = conversionCode_post "\t\t" "}" "\n";
++			}
+ 			_arraySizeMaxPaNa = _arraySizeVar;
+ 		} else {
+ 			conversionCode_pre  = conversionCode_pre  "\t\t" _arrayPaNa " = new " _arrayType "[" _arraySizeRaw "];" "\n";
+@@ -1278,6 +1296,12 @@ function printMember(fullName_m, memName_m, additionalIndices_m) {
+ 
+ 		if (_isFetching) {
+ 			# convert to an ArrayList
++			if (functionName_m == "Unit_CurrentCommandByType_getParams") {
++				conversionCode_post = conversionCode_post "\t\t" "if (" retVar_int_m " != " _arraySizeRaw ") {" "\n";
++				conversionCode_post = conversionCode_post "\t\t\t" "delete[] " _arrayPaNa ";" "\n";
++				conversionCode_post = conversionCode_post "\t\t\t" "throw CallbackAIException(\"GetParams\", " retVar_int_m ");" "\n";
++				conversionCode_post = conversionCode_post "\t\t" "}" "\n";
++			}
+ 			conversionCode_post = conversionCode_post "\t\t" _arrayListVar ".reserve(" _arraySizeVar ");" "\n";
+ 			conversionCode_post = conversionCode_post "\t\t" "for (int i=0; i < " _arraySizeMaxPaNa "; ++i) {" "\n";
+ 			if (_isF3) {
+diff --git a/rts/ExternalAI/AICallback.cpp b/rts/ExternalAI/AICallback.cpp
+index f48d96f..8fb3847 100644
+--- a/rts/ExternalAI/AICallback.cpp
++++ b/rts/ExternalAI/AICallback.cpp
+@@ -40,6 +40,7 @@
+ #include "Game/UI/Groups/GroupHandler.h"
+ #include "Sim/Units/CommandAI/CommandAI.h"
+ #include "Sim/Units/CommandAI/CommandQueue.h"
++#include "Sim/Units/CommandAI/FactoryCAI.h"
+ #include "Sim/Units/BuildInfo.h"
+ #include "Sim/Units/UnitDefHandler.h"
+ #include "Sim/Units/Unit.h"
+@@ -390,6 +391,47 @@ const CCommandQueue* CAICallback::GetCurrentUnitCommands(int unitId)
+ 	return nullptr;
+ }
+ 
++int CAICallback::GetCurrentUnitCommandsByType(int unitId, int commandQueueType, const CCommandQueue** commandQueue)
++{
++	if (commandQueue == nullptr)
++		return -2;
++
++	*commandQueue = nullptr;
++
++	const CUnit* unit = GetMyTeamUnit(unitId);
++	if (unit == nullptr)
++		return -1;
++
++	const CFactoryCAI* factoryCAI = dynamic_cast<const CFactoryCAI*>(unit->commandAI);
++
++	switch (commandQueueType) {
++		case CCommandQueue::CommandQueueType: {
++			if (factoryCAI != nullptr)
++				return -2;
++
++			*commandQueue = &unit->commandAI->commandQue;
++		} break;
++
++		case CCommandQueue::BuildQueueType: {
++			if (factoryCAI == nullptr)
++				return -2;
++
++			*commandQueue = &unit->commandAI->commandQue;
++		} break;
++
++		case CCommandQueue::NewUnitQueueType: {
++			if (factoryCAI == nullptr)
++				return -2;
++
++			*commandQueue = &factoryCAI->newUnitCommands;
++		} break;
++
++		default: return -2;
++	}
++
++	return 0;
++}
++
+ int CAICallback::GetUnitAiHint(int unitId)
+ {
+ 	return -1;
+diff --git a/rts/ExternalAI/AICallback.h b/rts/ExternalAI/AICallback.h
+index cf9dc6b..acb60b2 100644
+--- a/rts/ExternalAI/AICallback.h
++++ b/rts/ExternalAI/AICallback.h
+@@ -77,6 +77,7 @@ public:
+ 	int GiveOrder(int unitId,Command* c);
+ 	const std::vector<const SCommandDescription*>* GetUnitCommands(int unitId);
+ 	const CCommandQueue* GetCurrentUnitCommands(int unitId);
++	int GetCurrentUnitCommandsByType(int unitId, int commandQueueType, const CCommandQueue** commandQueue);
+ 
+ 	int GetUnitAiHint(int unitId);
+ 	int GetUnitTeam(int unitId);
+diff --git a/rts/ExternalAI/Interface/SSkirmishAICallback.h b/rts/ExternalAI/Interface/SSkirmishAICallback.h
+index f9fe3d0..f0dc583 100644
+--- a/rts/ExternalAI/Interface/SSkirmishAICallback.h
++++ b/rts/ExternalAI/Interface/SSkirmishAICallback.h
+@@ -2256,6 +2256,36 @@ struct SSkirmishAICallback {
+ 
+ 	bool              (CALLING_CONV *Debug_GraphDrawer_isEnabled)(int skirmishAIId);
+ 
++	/**
++	 * Returns the number of commands in an explicitly selected queue domain.
++	 * Queue-domain values are CCommandQueue::QueueType: CommandQueueType (0)
++	 * for non-factories, BuildQueueType (2) for factory production, and
++	 * NewUnitQueueType (1) for factory rally/new-unit commands.
++	 *
++	 * A non-negative result is an authoritative count, including a valid empty
++	 * queue. -1 means the actor is inaccessible. -2 means the actor/domain pair
++	 * is unsupported or invalid. -3 means the queue cannot be represented.
++	 */
++	int               (CALLING_CONV *Unit_getCurrentCommandsByType)(int skirmishAIId, int unitId, int commandQueueType); //$ FETCHER:MULTI:NUM:CurrentCommandByType:commandQueueType
++
++	int               (CALLING_CONV *Unit_CurrentCommandByType_getType)(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++	int               (CALLING_CONV *Unit_CurrentCommandByType_getId)(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++	short             (CALLING_CONV *Unit_CurrentCommandByType_getOptions)(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++	int               (CALLING_CONV *Unit_CurrentCommandByType_getTag)(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++	int               (CALLING_CONV *Unit_CurrentCommandByType_getTimeOut)(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++	/**
++	 * Returns the exact parameter count. A null output pointer queries the count.
++	 * If params_sizeMax is smaller than that count, nothing is copied and the
++	 * required count is returned. Negative capacity or invalid selection returns
++	 * -1, so a partial read can never be mistaken for a complete snapshot.
++	 */
++	int               (CALLING_CONV *Unit_CurrentCommandByType_getParams)(int skirmishAIId, int unitId, int commandQueueType, int commandId, float* params, int params_sizeMax); //$ ARRAY:params
++
+ };
+ 
+ #if	defined(__cplusplus)
+diff --git a/rts/ExternalAI/SSkirmishAICallbackImpl.cpp b/rts/ExternalAI/SSkirmishAICallbackImpl.cpp
+index 721aa27..860c556 100644
+--- a/rts/ExternalAI/SSkirmishAICallbackImpl.cpp
++++ b/rts/ExternalAI/SSkirmishAICallbackImpl.cpp
+@@ -48,6 +48,8 @@
+ #include "System/FileSystem/ArchiveScanner.h"
+ #include "System/Log/ILog.h"
+ 
++#include <algorithm>
++#include <limits>
+ 
+ static std::array<std::pair<CAICallback, CAICheats>, MAX_AIS> AI_LEGACY_CALLBACKS;
+ static std::array<SSkirmishAICallback, MAX_AIS> AI_CALLBACK_WRAPPERS;
+@@ -3540,6 +3542,110 @@ EXPORT(int) skirmishAiCallback_Unit_CurrentCommand_getParams(
+ 
+ #undef CHECK_COMMAND_ID
+ 
++/**
++ * Returns a team-owned unit's selected command queue.
++ *
++ * Status 0 means that commandQueue points at an authoritative queue. Status -1
++ * means the actor is inaccessible. Status -2 means the requested queue domain
++ * is invalid or unsupported for the actor. Cheats deliberately do not expose
++ * this API so the normal ownership boundary cannot be weakened accidentally.
++ */
++static inline int _intern_Unit_getCurrentCommandQueueByType(
++	int skirmishAIId,
++	int unitId,
++	int commandQueueType,
++	const CCommandQueue** commandQueue
++) {
++	if (commandQueue == nullptr)
++		return -2;
++
++	*commandQueue = nullptr;
++
++	if (skirmishAiCallback_Cheats_isEnabled(skirmishAIId))
++		return -2;
++
++	return GetCallBack(skirmishAIId)->GetCurrentUnitCommandsByType(unitId, commandQueueType, commandQueue);
++}
++
++#define CHECK_TYPED_COMMAND_ID(commandQueue, commandId) \
++		(commandQueue != nullptr && \
++			commandId >= 0 && \
++			static_cast<unsigned int>(commandId) < commandQueue->size())
++
++EXPORT(int) skirmishAiCallback_Unit_getCurrentCommandsByType(int skirmishAIId, int unitId, int commandQueueType) {
++	const CCommandQueue* q = nullptr;
++	const int status = _intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++
++	if (status != 0)
++		return status;
++
++	if (q->size() > static_cast<CCommandQueue::size_type>(std::numeric_limits<int>::max()))
++		return -3;
++
++	return static_cast<int>(q->size());
++}
++
++EXPORT(int) skirmishAiCallback_Unit_CurrentCommandByType_getType(int skirmishAIId, int unitId, int commandQueueType, int commandId) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++	return CHECK_TYPED_COMMAND_ID(q, commandId) ? q->GetType() : -1;
++}
++
++EXPORT(int) skirmishAiCallback_Unit_CurrentCommandByType_getId(int skirmishAIId, int unitId, int commandQueueType, int commandId) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++	return CHECK_TYPED_COMMAND_ID(q, commandId) ? q->at(commandId).GetID() : 0;
++}
++
++EXPORT(short) skirmishAiCallback_Unit_CurrentCommandByType_getOptions(int skirmishAIId, int unitId, int commandQueueType, int commandId) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++	return CHECK_TYPED_COMMAND_ID(q, commandId) ? q->at(commandId).GetOpts() : 0;
++}
++
++EXPORT(int) skirmishAiCallback_Unit_CurrentCommandByType_getTag(int skirmishAIId, int unitId, int commandQueueType, int commandId) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++	return CHECK_TYPED_COMMAND_ID(q, commandId) ? q->at(commandId).GetTag() : 0;
++}
++
++EXPORT(int) skirmishAiCallback_Unit_CurrentCommandByType_getTimeOut(int skirmishAIId, int unitId, int commandQueueType, int commandId) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++	return CHECK_TYPED_COMMAND_ID(q, commandId) ? q->at(commandId).GetTimeOut() : 0;
++}
++
++EXPORT(int) skirmishAiCallback_Unit_CurrentCommandByType_getParams(
++	int skirmishAIId,
++	int unitId,
++	int commandQueueType,
++	int commandId,
++	float* params,
++	int maxNumParams
++) {
++	const CCommandQueue* q = nullptr;
++	_intern_Unit_getCurrentCommandQueueByType(skirmishAIId, unitId, commandQueueType, &q);
++
++	if (!CHECK_TYPED_COMMAND_ID(q, commandId) || maxNumParams < 0)
++		return -1;
++
++	const int numParams = q->at(commandId).GetNumParams();
++	if (params == nullptr)
++		return numParams;
++
++	// Never expose a prefix as though it were a complete command snapshot.
++	if (maxNumParams < numParams)
++		return numParams;
++	if (numParams == 0)
++		return 0;
++
++	const float* commandParams = q->at(commandId).GetParams();
++	std::copy(commandParams, commandParams + numParams, params);
++	return numParams;
++}
++
++#undef CHECK_TYPED_COMMAND_ID
++
+ 
+ 
+ EXPORT(float) skirmishAiCallback_Unit_getExperience(int skirmishAIId, int unitId) {
+@@ -5525,6 +5631,13 @@ static void skirmishAiCallback_init(SSkirmishAICallback* callback) {
+ 	callback->Unit_Weapon_isShieldEnabled = &skirmishAiCallback_Unit_Weapon_isShieldEnabled;
+ 	callback->Unit_Weapon_getShieldPower = &skirmishAiCallback_Unit_Weapon_getShieldPower;
+ 	callback->Debug_GraphDrawer_isEnabled = &skirmishAiCallback_Debug_GraphDrawer_isEnabled;
++	callback->Unit_getCurrentCommandsByType = &skirmishAiCallback_Unit_getCurrentCommandsByType;
++	callback->Unit_CurrentCommandByType_getType = &skirmishAiCallback_Unit_CurrentCommandByType_getType;
++	callback->Unit_CurrentCommandByType_getId = &skirmishAiCallback_Unit_CurrentCommandByType_getId;
++	callback->Unit_CurrentCommandByType_getOptions = &skirmishAiCallback_Unit_CurrentCommandByType_getOptions;
++	callback->Unit_CurrentCommandByType_getTag = &skirmishAiCallback_Unit_CurrentCommandByType_getTag;
++	callback->Unit_CurrentCommandByType_getTimeOut = &skirmishAiCallback_Unit_CurrentCommandByType_getTimeOut;
++	callback->Unit_CurrentCommandByType_getParams = &skirmishAiCallback_Unit_CurrentCommandByType_getParams;
+ }
+ 
+ SSkirmishAICallback* skirmishAiCallback_GetInstance(CSkirmishAIWrapper* ai)
+@@ -5552,4 +5665,3 @@ void skirmishAiCallback_BlockOrders(const CSkirmishAIWrapper* ai)
+ {
+ 	GetCallBack(ai->GetSkirmishAIID())->AllowOrders(false);
+ }
+-
+diff --git a/rts/ExternalAI/SSkirmishAICallbackImpl.h b/rts/ExternalAI/SSkirmishAICallbackImpl.h
+index e1914af..6516a64 100644
+--- a/rts/ExternalAI/SSkirmishAICallbackImpl.h
++++ b/rts/ExternalAI/SSkirmishAICallbackImpl.h
+@@ -1263,6 +1263,20 @@ EXPORT(float            ) skirmishAiCallback_Unit_Weapon_getShieldPower(int skir
+ 
+ EXPORT(bool             ) skirmishAiCallback_Debug_GraphDrawer_isEnabled(int skirmishAIId);
+ 
++EXPORT(int              ) skirmishAiCallback_Unit_getCurrentCommandsByType(int skirmishAIId, int unitId, int commandQueueType);
++
++EXPORT(int              ) skirmishAiCallback_Unit_CurrentCommandByType_getType(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++EXPORT(int              ) skirmishAiCallback_Unit_CurrentCommandByType_getId(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++EXPORT(short            ) skirmishAiCallback_Unit_CurrentCommandByType_getOptions(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++EXPORT(int              ) skirmishAiCallback_Unit_CurrentCommandByType_getTag(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++EXPORT(int              ) skirmishAiCallback_Unit_CurrentCommandByType_getTimeOut(int skirmishAIId, int unitId, int commandQueueType, int commandId);
++
++EXPORT(int              ) skirmishAiCallback_Unit_CurrentCommandByType_getParams(int skirmishAIId, int unitId, int commandQueueType, int commandId, float* params, int params_sizeMax);
++
+ #if	defined(__cplusplus)
+ } // extern "C"
+ #endif
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index b483b94..eec446f 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -517,5 +517,15 @@ endif()
+ 
+ ################################################################################
+ 
++### RallyQueueCallback
++	set(test_name RallyQueueCallback)
++	set(test_src
++			"${CMAKE_CURRENT_SOURCE_DIR}/engine/ExternalAI/testRallyQueueCallback.cpp"
++		)
++	set(test_libs "")
++	add_spring_test(${test_name} "${test_src}" "${test_libs}" "-DBUILDING_AI")
++
++################################################################################
++
+ 
+ add_subdirectory(headercheck)
+diff --git a/test/engine/ExternalAI/testRallyQueueCallback.cpp b/test/engine/ExternalAI/testRallyQueueCallback.cpp
+new file mode 100644
+index 0000000..15adb31
+--- /dev/null
++++ b/test/engine/ExternalAI/testRallyQueueCallback.cpp
+@@ -0,0 +1,40 @@
++/* This file is part of the Spring engine (GPL v2 or later), see LICENSE.html */
++
++#include "ExternalAI/Interface/SSkirmishAICallback.h"
++#include "Sim/Units/CommandAI/CommandQueue.h"
++
++#include <catch_amalgamated.hpp>
++
++#include <cstddef>
++#include <type_traits>
++
++namespace {
++
++using CountByType = int (*)(int, int, int);
++using IntGetterByType = int (*)(int, int, int, int);
++using OptionsGetterByType = short (*)(int, int, int, int);
++using ParamsGetterByType = int (*)(int, int, int, int, float*, int);
++
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_getCurrentCommandsByType), CountByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getType), IntGetterByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getId), IntGetterByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getOptions), OptionsGetterByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getTag), IntGetterByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getTimeOut), IntGetterByType>);
++static_assert(std::is_same_v<decltype(SSkirmishAICallback::Unit_CurrentCommandByType_getParams), ParamsGetterByType>);
++
++static_assert(CCommandQueue::CommandQueueType == 0);
++static_assert(CCommandQueue::NewUnitQueueType == 1);
++static_assert(CCommandQueue::BuildQueueType == 2);
++
++} // namespace
++
++TEST_CASE("Rally queue callbacks remain an append-only ABI extension")
++{
++	CHECK(offsetof(SSkirmishAICallback, Unit_getCurrentCommandsByType) >
++	      offsetof(SSkirmishAICallback, Debug_GraphDrawer_isEnabled));
++	CHECK(offsetof(SSkirmishAICallback, Unit_CurrentCommandByType_getType) >
++	      offsetof(SSkirmishAICallback, Unit_getCurrentCommandsByType));
++	CHECK(offsetof(SSkirmishAICallback, Unit_CurrentCommandByType_getParams) >
++	      offsetof(SSkirmishAICallback, Unit_CurrentCommandByType_getTimeOut));
++}

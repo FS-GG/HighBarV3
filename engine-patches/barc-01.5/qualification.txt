@@ -1,0 +1,49 @@
+Qualification date: 2026-09-29
+Recoil base: 2639eedac7d1fd67d793ec93ebd27f014f336a14
+Local implementation commit: 7555c836e0457b04100b20149497d088dd9c2ca7
+Generated version: 2025.06.19-1-g7555c83 routine/barc-01.5-rally-api (BARC-01.5-rally-api-v1)
+CMake: 3.31.10
+Compiler: GCC 16.2.1
+
+Successful build targets:
+  spring-headless
+  C-AIInterface
+  Cpp-AIWrapper
+  test_RallyQueueCallback
+
+Focused test:
+  All tests passed (3 assertions in 1 test case)
+
+Artifact SHA-256:
+  874c88f5d50b44699b44bda5a8e4d9160ccf9b3c1f7ee61f3b7e97e5f172a3a2  spring-headless
+  0792abb9a7d9909d967b830ed0a5bbfb51baffc4360af025135e06f1f358b498  AI/Interfaces/C/data/libAIInterface.so
+  9ef4e9aaf3937c232edda65e92e2d5820ad816c3c0e4bbebe39c1074c83c96cf  AI/Wrappers/Cpp/libCpp.a
+  a6efdb806e6ee241bc86e3ad9070cc78a5a48c882d8d36926365e2c6e7b74143  rts/ExternalAI/Interface/SSkirmishAICallback.h
+  5f531113f1c7a02a6c19b9046fceba36e2f84fa4e915f8a8c40c8e68ae4bea35  AI/Wrappers/Cpp/src-generated/WrappUnit.h
+  438d14e11fdad697cfcb03a04a313dc42092c87d2d989bd92f86a1a296307883  AI/Wrappers/Cpp/src-generated/WrappCurrentCommandByType.h
+
+Recipe SHA-256:
+  ed347949b87a317f170c863446a3434170208ec23d93fc6206f5380371926b4c  recoil-rally-api.patch
+  bf7c2bd51d271ac9c91687b91d537ba87a2028d4fbe1d9f134c03031cd2442e6  submodules.txt
+  69ee27d832962c74723e05d89e49f8e68602065ade662fa6879eca67a0f5a4c4  gcc16-rmlui.cmake
+  d131a42e67d32e2891583c850c76a74d8bf81d782b9b4d5ebddc5cdad5d2f837  scripts/build-barc-recoil-rally.sh
+
+Reproduction identity check:
+  A fresh local clone was detached at the recorded base, the patch was applied
+  with `git apply --index`, and `git commit-tree` was given the recorded parent,
+  tree, message, author, and timestamps. It reproduced the full commit exactly:
+  7555c836e0457b04100b20149497d088dd9c2ca7
+
+Read-only loader qualification:
+  SDL2 package URL: https://archive.archlinux.org/packages/s/sdl2/sdl2-2.30.9-1-x86_64.pkg.tar.zst
+  SDL2 package SHA-256: d7ae299ea57d9712abfa4300ebc7cf5b0c9d5def84df738cd7c98faa4d6f0969
+  Extracted libSDL2-2.0.so.0 SHA-256: fe28e057440280c280b6615d8c74c86974237986c693391078f20acfcc490afa
+  LD_LIBRARY_PATH: extracted SDL2 usr/lib, then sysroot usr/lib
+  Resolved SDL2: extracted SDL2 2.30.9 library
+  Resolved DevIL/Jasper: sysroot libIL.so.1 and libjasper.so.7
+  Output: spring-headless version 2025.06.19-1-g7555c83 routine/barc-01.5-rally-api (BARC-01.5-rally-api-v1 Headless)
+
+The sysroot's SDL2 is sdl2-compat and requires an unavailable SDL3 runtime, so
+it was deliberately not selected for qualification. The SDL2 package was only
+downloaded and extracted under `/tmp`; no package was installed, no global
+library path changed, the executable hash stayed exact, and no game launched.
