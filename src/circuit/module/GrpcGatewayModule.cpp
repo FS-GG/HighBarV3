@@ -19,6 +19,7 @@
 #include "grpc/RingBuffer.h"
 #include "grpc/OrderStateTracker.h"
 #include "grpc/LiveControlState.h"
+#include "grpc/TacticalNativeState.h"
 #include "grpc/SchemaVersion.h"
 #include "grpc/SnapshotBuilder.h"
 #include "SpringHeadlessPin.h"  // T006 — kEngineReleaseId / kEngineSha256
@@ -31,6 +32,7 @@
 #include "unit/enemy/EnemyInfo.h"
 #include "spring/SpringMap.h"
 #include "util/FileSystem.h"
+#include "util/Utils.h"
 
 #include "AIFloat3.h"
 #include <Cheats.h>
@@ -39,6 +41,13 @@
 #include <Lua.h>
 #include <Resource.h>
 #include <Unit.h>
+#include <UnitDef.h>
+#include <Feature.h>
+#include <FeatureDef.h>
+#include <Mod.h>
+#include <Command.h>
+#include <CommandDescription.h>
+#include "Sim/Units/CommandAI/Command.h"
 
 #include <chrono>
 #include <cmath>
@@ -55,6 +64,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <array>
+#include <algorithm>
+#include <cstdint>
+#include <iomanip>
+#include <unordered_set>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -63,6 +77,68 @@
 namespace circuit {
 
 namespace {
+
+constexpr std::size_t kTacticalMaxCatalogueEntries = 4096;
+constexpr std::size_t kTacticalPageEntries = 128;
+constexpr std::size_t kTacticalMaxBuildOptions = 256;
+constexpr std::size_t kTacticalMaxQueueEntries = 64;
+constexpr std::size_t kTacticalMaxFeatures = 256;
+constexpr std::size_t kTacticalMaxDescriptors = 32;
+constexpr std::uint32_t kTacticalMaxAreaRadius = 2048;
+
+std::uint64_t StableRevision(const std::string& value) {
+	std::uint64_t hash = 14695981039346656037ull;
+	for (unsigned char byte : value) { hash ^= byte; hash *= 1099511628211ull; }
+	return hash == 0 ? 1 : hash;
+}
+
+// SHA-256 over the complete, sorted native catalogue descriptor. This binds
+// the advertised content identity to the actual definitions exposed by the
+// installed engine callback rather than a file name or guessed BAR version.
+std::string Sha256(const std::string& input) {
+	static constexpr std::uint32_t k[64] = {
+		0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+		0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+		0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+		0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+		0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+		0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+		0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+		0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2};
+	auto rotr=[](std::uint32_t x,int n){return (x>>n)|(x<<(32-n));};
+	std::vector<unsigned char> data(input.begin(), input.end());
+	const std::uint64_t bits=static_cast<std::uint64_t>(data.size())*8;
+	data.push_back(0x80); while((data.size()%64)!=56) data.push_back(0);
+	for(int i=7;i>=0;--i) data.push_back(static_cast<unsigned char>(bits>>(i*8)));
+	std::uint32_t h[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+	for(std::size_t off=0;off<data.size();off+=64){std::uint32_t w[64]{};
+		for(int i=0;i<16;++i)w[i]=(data[off+i*4]<<24)|(data[off+i*4+1]<<16)|(data[off+i*4+2]<<8)|data[off+i*4+3];
+		for(int i=16;i<64;++i){auto s0=rotr(w[i-15],7)^rotr(w[i-15],18)^(w[i-15]>>3);auto s1=rotr(w[i-2],17)^rotr(w[i-2],19)^(w[i-2]>>10);w[i]=w[i-16]+s0+w[i-7]+s1;}
+		std::uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
+		for(int i=0;i<64;++i){auto s1=rotr(e,6)^rotr(e,11)^rotr(e,25);auto ch=(e&f)^((~e)&g);auto t1=hh+s1+ch+k[i]+w[i];auto s0=rotr(a,2)^rotr(a,13)^rotr(a,22);auto maj=(a&b)^(a&c)^(b&c);auto t2=s0+maj;hh=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}
+		h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=hh;}
+	std::string out(32,'\0'); for(int i=0;i<8;++i)for(int j=0;j<4;++j)out[i*4+j]=static_cast<char>(h[i]>>(24-j*8)); return out;
+}
+
+::highbar::v1::NativeQueueDomain QueueDomain(int type, bool factory) {
+	if (!factory) return ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER;
+	return type == 2 ? ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
+	                 : ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY;
+}
+
+::highbar::v1::LiveSemanticAction QueueAction(int command_id) {
+	if (command_id < 0) return ::highbar::v1::LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE;
+	switch (command_id) {
+	case CMD_MOVE: return ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE;
+	case CMD_GUARD: return ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD;
+	case CMD_REPAIR: return ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR;
+	// The legacy queue encodes feature reclaim as feature_id + maxUnits. The
+	// installed callback does not expose maxUnits, so the queue projection must
+	// not guess whether an observed CMD_RECLAIM targets a unit or a feature.
+	case CMD_RECLAIM: return ::highbar::v1::LIVE_SEMANTIC_ACTION_UNSPECIFIED;
+	default: return ::highbar::v1::LIVE_SEMANTIC_ACTION_UNSPECIFIED;
+	}
+}
 
 std::mutex& CoordinatorTraceMutex() {
 	static std::mutex m;
@@ -467,6 +543,17 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	capabilities.set_terrain_elevation_available(false);
 	capabilities.set_supports_stop(true); capabilities.set_supports_move(true);
 	capabilities.set_supports_attack_visible_unit(true); capabilities.set_max_reported_units(live_max_reported_units_);
+	auto* tactical = capabilities.mutable_tactical();
+	tactical->set_profile("barc-live-tactical-v1");
+	tactical->set_revision(1);
+	tactical->set_max_catalogue_entries(kTacticalMaxCatalogueEntries);
+	tactical->set_max_catalogue_page_entries(kTacticalPageEntries);
+	tactical->set_max_build_options_per_actor(kTacticalMaxBuildOptions);
+	tactical->set_max_queue_entries_per_actor(kTacticalMaxQueueEntries);
+	tactical->set_max_feature_references(kTacticalMaxFeatures);
+	tactical->set_max_factory_production_count(1);
+	tactical->set_max_area_radius_world_units(kTacticalMaxAreaRadius);
+	tactical->set_max_command_descriptors_per_actor(kTacticalMaxDescriptors);
 	AppendCoordinatorTrace(
 		"live capabilities report match_bytes=" + std::to_string(live_control_state_->MatchIncarnation().size())
 		+ " actors=" + std::to_string(capabilities.max_actor_count())
@@ -481,6 +568,203 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 		+ " move=" + std::to_string(capabilities.supports_move())
 		+ " attack=" + std::to_string(capabilities.supports_attack_visible_unit()));
 	coordinator_client_->ReportLiveCapabilities(capabilities);
+	BuildAndReportTacticalCatalogue();
+}
+
+void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
+	if (!coordinator_client_ || !live_control_state_ || circuit == nullptr) return;
+	auto* callback = circuit->GetCallback();
+	if (callback == nullptr) return;
+	auto definitions = callback->GetUnitDefs();
+	std::sort(definitions.begin(), definitions.end(), [](auto* a, auto* b) {
+		return a != nullptr && (b == nullptr || a->GetUnitDefId() < b->GetUnitDefId());
+	});
+	const bool bounded = definitions.size() <= kTacticalMaxCatalogueEntries;
+	bool catalogue_valid = bounded;
+	std::vector<::highbar::v1::NativeUnitDefinition> native;
+	if (bounded) native.reserve(definitions.size());
+	auto* economy = circuit->GetEconomyManager();
+	auto* metal = economy != nullptr ? economy->GetMetalRes() : nullptr;
+	auto* energy = economy != nullptr ? economy->GetEnergyRes() : nullptr;
+	if (bounded) {
+		for (auto* definition : definitions) {
+			if (definition == nullptr || definition->GetUnitDefId() <= 0) continue;
+			::highbar::v1::NativeUnitDefinition out;
+			out.set_definition_id(static_cast<std::uint32_t>(definition->GetUnitDefId()));
+			out.set_internal_name(definition->GetName() != nullptr ? definition->GetName() : "");
+			out.set_display_name(definition->GetHumanName() != nullptr ? definition->GetHumanName() : "");
+			out.set_footprint_x_cells(static_cast<std::uint32_t>(std::max(0, definition->GetXSize())));
+			out.set_footprint_z_cells(static_cast<std::uint32_t>(std::max(0, definition->GetZSize())));
+			auto* cost = out.mutable_cost();
+			if (metal != nullptr) { const float value=definition->GetCost(metal); if (std::isfinite(value)&&value>=0) cost->set_metal(value); }
+			if (energy != nullptr) { const float value=definition->GetCost(energy); if (std::isfinite(value)&&value>=0) cost->set_energy(value); }
+			const float build_time=definition->GetBuildTime(); if (std::isfinite(build_time)&&build_time>=0) cost->set_build_time(build_time);
+			auto options = definition->GetBuildOptions();
+			std::sort(options.begin(), options.end(), [](auto* a, auto* b) {
+				return a != nullptr && (b == nullptr || a->GetUnitDefId() < b->GetUnitDefId());
+			});
+			if (options.size() <= kTacticalMaxBuildOptions) {
+				for (auto* option : options) if (option != nullptr && option->GetUnitDefId()>0)
+					out.add_build_option_definition_ids(static_cast<std::uint32_t>(option->GetUnitDefId()));
+			} else catalogue_valid = false;
+			utils::free_clear(options);
+			native.push_back(std::move(out));
+		}
+	}
+	utils::free_clear(definitions);
+	auto* mod = callback->GetMod();
+	const std::string game_name = mod != nullptr && mod->GetHumanName() != nullptr ? mod->GetHumanName() : "";
+	const std::string game_version = mod != nullptr && mod->GetVersion() != nullptr ? mod->GetVersion() : "";
+	delete mod;
+	std::string content_seed;
+	auto append_identity = [&](const std::string& value) {
+		content_seed.append(std::to_string(value.size())); content_seed.push_back(':'); content_seed.append(value);
+	};
+	append_identity(grpc::kEngineReleaseId); append_identity(game_name); append_identity(game_version);
+	for (const auto& definition : native) content_seed += definition.SerializeAsString();
+	const std::string content_hash = Sha256(content_seed);
+	tactical_catalogue_id_ = content_hash.substr(0, 16);
+	tactical_catalogue_revision_ = StableRevision(content_hash + content_seed);
+	tactical_catalogue_complete_ = catalogue_valid && !native.empty();
+	live_control_state_->RecordTacticalCatalogue(
+		tactical_catalogue_id_, tactical_catalogue_revision_, tactical_catalogue_complete_);
+	const std::size_t page_count = std::max<std::size_t>(1, (native.size()+kTacticalPageEntries-1)/kTacticalPageEntries);
+	for (std::size_t page_index=0; page_index<page_count; ++page_index) {
+		::highbar::v1::TacticalCataloguePage page;
+		page.set_tactical_profile("barc-live-tactical-v1"); page.set_tactical_revision(1);
+		page.mutable_content()->set_engine_version(grpc::kEngineReleaseId);
+		page.mutable_content()->set_game_name(game_name); page.mutable_content()->set_game_version(game_version);
+		page.mutable_content()->set_game_content_sha256(content_hash);
+		page.set_catalogue_id(tactical_catalogue_id_); page.set_catalogue_revision(tactical_catalogue_revision_);
+		page.set_page_index(static_cast<std::uint32_t>(page_index)); page.set_page_count(static_cast<std::uint32_t>(page_count));
+		page.set_complete(tactical_catalogue_complete_);
+		const auto end=std::min(native.size(),(page_index+1)*kTacticalPageEntries);
+		for(std::size_t i=page_index*kTacticalPageEntries;i<end;++i)*page.add_definitions()=native[i];
+		if(page_index+1<page_count) page.set_next_page_token(content_hash.substr(16,12)+std::to_string(page_index+1));
+		coordinator_client_->ReportTacticalCatalogue(page);
+	}
+}
+
+void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
+		const ::highbar::v1::NativeObservationBasis& basis) {
+	if (!tactical_catalogue_complete_ || !coordinator_client_
+	    || !live_control_state_ || circuit == nullptr) return;
+	::highbar::v1::TacticalSnapshotMetadata snapshot;
+	*snapshot.mutable_basis() = basis;
+	snapshot.set_catalogue_id(tactical_catalogue_id_);
+	snapshot.set_catalogue_revision(tactical_catalogue_revision_);
+	auto* callback = circuit->GetCallback();
+	if (callback == nullptr) return;
+	auto* economy_manager = circuit->GetEconomyManager();
+	std::unique_ptr<springai::Economy> economy(callback->GetEconomy());
+	auto* econ = snapshot.mutable_economy();
+	econ->set_perspective_team_id(circuit->GetTeamId());
+	econ->set_sample_frame(CurrentFrame());
+	auto fill_resource = [&](::highbar::v1::NativeEconomyValue* out,
+	                         springai::Resource* resource) {
+		if (out == nullptr || resource == nullptr || economy == nullptr) return;
+		out->set_resource_name(resource->GetName() != nullptr ? resource->GetName() : "");
+		out->set_unit("engine_resource_units");
+		const float current=economy->GetCurrent(resource), storage=economy->GetStorage(resource);
+		const float income=economy->GetIncome(resource), usage=economy->GetUsage(resource);
+		if (std::isfinite(current)) out->set_current(current);
+		if (std::isfinite(storage)) out->set_storage(storage);
+		if (std::isfinite(income)) out->set_income_per_second(income);
+		if (std::isfinite(usage)) out->set_usage_per_second(usage);
+	};
+	fill_resource(econ->mutable_metal(), economy_manager != nullptr ? economy_manager->GetMetalRes() : nullptr);
+	fill_resource(econ->mutable_energy(), economy_manager != nullptr ? economy_manager->GetEnergyRes() : nullptr);
+
+	auto features = callback->GetFeatures();
+	if (features.size() > kTacticalMaxFeatures) { utils::free_clear(features); return; }
+	if (!tactical_feature_lifetimes_) tactical_feature_lifetimes_ = std::make_unique<grpc::FeatureLifetimeLedger>();
+	std::vector<grpc::VisibleFeatureSample> feature_samples;
+	std::vector<float> feature_reclaim;
+	feature_samples.reserve(features.size());
+	feature_reclaim.reserve(features.size());
+	for (auto* feature : features) {
+		if (feature == nullptr || feature->GetFeatureId() < 0) continue;
+		auto* def=feature->GetDef(); const auto pos=feature->GetPosition();
+		if(def==nullptr||def->GetFeatureDefId()<=0||!std::isfinite(pos.x)||!std::isfinite(pos.y)||!std::isfinite(pos.z)) { delete def; continue; }
+		feature_samples.push_back({static_cast<std::uint32_t>(feature->GetFeatureId()),static_cast<std::uint32_t>(def->GetFeatureDefId()),pos.x,pos.y,pos.z});
+		feature_reclaim.push_back(feature->GetReclaimLeft());
+		delete def;
+	}
+	if (!tactical_feature_lifetimes_->ReplaceCompleteVisibleSnapshot(basis.state_sequence(), feature_samples)) {
+		utils::free_clear(features); return;
+	}
+	for (std::size_t i=0;i<feature_samples.size();++i) {
+		const auto& sample=feature_samples[i]; const auto ref=tactical_feature_lifetimes_->Reference(sample.id);
+		if (!ref) continue;
+		auto* out=snapshot.add_features(); out->mutable_reference()->set_id(ref->id); out->mutable_reference()->set_lifetime(ref->lifetime);
+		out->set_definition_id(sample.def_id); out->set_world_x(sample.x); out->set_elevation(sample.y); out->set_world_z(sample.z);
+		if (std::isfinite(feature_reclaim[i])) out->set_reclaim_left(feature_reclaim[i]);
+	}
+	utils::free_clear(features);
+
+	for (const auto& [unit_id, actor] : circuit->GetTeamUnits()) {
+		if (actor == nullptr || actor->IsDead() || actor->GetUnit() == nullptr) continue;
+		auto* unit=actor->GetUnit(); auto* actor_out=snapshot.add_actors();
+		actor_out->mutable_actor()->set_id(static_cast<std::uint32_t>(unit_id));
+		actor_out->mutable_actor()->set_lifetime(live_control_state_->OwnedLifetime(static_cast<std::uint32_t>(unit_id)));
+		auto* cdef=actor->GetCircuitDef(); const bool factory=cdef!=nullptr && !cdef->IsAbleToAssist() && !cdef->GetBuildOptions().empty();
+		auto supported=unit->GetSupportedCommands();
+		std::optional<bool> repeat_mode;
+		auto descriptor_for = [&](::highbar::v1::NativeTacticalDescriptorKind kind) {
+			for (auto& existing : *actor_out->mutable_descriptors()) if (existing.kind() == kind) return &existing;
+			if (actor_out->descriptors_size() >= static_cast<int>(kTacticalMaxDescriptors))
+				return static_cast<::highbar::v1::NativeTacticalCommandDescriptor*>(nullptr);
+			auto* added = actor_out->add_descriptors(); added->set_kind(kind); return added;
+		};
+		bool descriptor_overflow = false;
+		for(auto* description:supported){if(description==nullptr)continue;
+			const int id=description->GetId(); ::highbar::v1::NativeTacticalDescriptorKind kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_KIND_UNSPECIFIED;
+			if (id < 0) kind = factory
+				? ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_FACTORY_PRODUCE
+				: ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BUILD;
+			else if(id==CMD_GUARD)kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_GUARD;
+			else if(id==CMD_REPAIR)kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_REPAIR;
+			else if(id==CMD_RECLAIM)kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_UNIT;
+			else if(id==CMD_INSERT)kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_INSERT;
+			else if(id==CMD_REMOVE)kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REMOVE;
+			else if(id==CMD_REPEAT){kind=::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REPEAT;auto params=description->GetParams();if(!params.empty()&&params[0]!=nullptr&&(std::string(params[0])=="0"||std::string(params[0])=="1"))repeat_mode=std::string(params[0])=="1";}
+			else if(id==34571||id==37382){auto params=description->GetParams(); bool boolean=params.size()==3&&params[0]!=nullptr&&params[1]!=nullptr&&params[2]!=nullptr&&(std::string(params[0])=="0"||std::string(params[0])=="1");
+				if (boolean && !description->IsDisabled()) kind = id == 34571
+					? ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY
+					: ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE;}
+			if(kind==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_KIND_UNSPECIFIED)continue;
+			auto* out=descriptor_for(kind); if(out==nullptr){descriptor_overflow=true;break;} out->set_disabled(description->IsDisabled());
+			if(id<0)out->add_allowed_definition_ids(static_cast<std::uint32_t>(-id));
+			if(id==34571||id==37382){out->set_native_command_id(id);out->add_allowed_mode_values(::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_DISABLED);out->add_allowed_mode_values(::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED);auto params=description->GetParams();out->set_observed_mode_value(std::string(params[0])=="1"
+				? ::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED
+				: ::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_DISABLED);}
+			if (id == CMD_RECLAIM) {
+				for (const auto extra : {::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE,
+				                         ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_AREA}) {
+					auto* additional = descriptor_for(extra);
+					if (additional == nullptr) { descriptor_overflow=true; break; }
+					additional->set_disabled(description->IsDisabled());
+				}
+			}
+		}
+		utils::free_clear(supported);
+		if (descriptor_overflow) return;
+		for (auto& value : *actor_out->mutable_descriptors())
+			std::sort(value.mutable_allowed_definition_ids()->begin(),value.mutable_allowed_definition_ids()->end());
+		std::sort(actor_out->mutable_descriptors()->begin(),actor_out->mutable_descriptors()->end(),[](const auto& a,const auto& b){return a.kind()<b.kind();});
+		std::string descriptor_bytes;for(const auto& d:actor_out->descriptors())descriptor_bytes+=d.SerializeAsString();actor_out->set_descriptor_revision(StableRevision(descriptor_bytes));
+		auto commands=unit->GetCurrentCommands(); std::vector<grpc::NativeQueueEntry> native_entries;native_entries.reserve(commands.size());
+		for(auto* command:commands)if(command!=nullptr)native_entries.push_back({command->GetType(),command->GetId(),static_cast<std::uint16_t>(command->GetOptions()),command->GetTag(),command->GetTimeOut(),command->GetParams()});
+		const int queue_type=commands.empty()? (factory?2:0) : commands.front()->GetType(); const auto domain=QueueDomain(queue_type,factory);
+		auto* queue=actor_out->add_queue();queue->set_domain(domain);queue->set_revision(grpc::ComputeNativeQueueRevision(native_entries));queue->set_complete(commands.size()<=kTacticalMaxQueueEntries);
+		if (repeat_mode.has_value()) queue->set_repeat(*repeat_mode);
+		for(std::size_t i=0;i<commands.size()&&i<kTacticalMaxQueueEntries;++i){auto* command=commands[i];if(command==nullptr)continue;auto* out=queue->add_entries();out->set_native_tag(command->GetTag());out->set_action(QueueAction(command->GetId()));
+			const auto params=command->GetParams();if(command->GetId()<0)out->set_definition_id(static_cast<std::uint32_t>(-command->GetId()));else if(command->GetId()==CMD_MOVE&&params.size()>=3){out->set_world_x(params[0]);out->set_world_z(params[2]);}}
+		utils::free_clear(commands);
+		if(factory){auto* rally=actor_out->add_queue();rally->set_domain(::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY);rally->set_complete(false);}
+	}
+	live_control_state_->RecordTacticalSnapshot(snapshot);
+	coordinator_client_->ReportTacticalSnapshot(snapshot);
 }
 
 void CGrpcGatewayModule::MaybeEmitInitialCoordinatorSnapshot(const char* reason) {
@@ -807,6 +1091,8 @@ void CGrpcGatewayModule::OnFeatureCreated(int feature_id, int def_id,
 
 void CGrpcGatewayModule::OnFeatureDestroyed(int feature_id) {
 	HB_HOOK_GUARD_VOID({
+		if (tactical_feature_lifetimes_ && feature_id >= 0)
+			tactical_feature_lifetimes_->MarkDestroyed(static_cast<std::uint32_t>(feature_id));
 		auto* ev = current_frame_delta_.add_events()->mutable_feature_destroyed();
 		ev->set_feature_id(static_cast<std::uint32_t>(feature_id));
 	});
@@ -1063,12 +1349,14 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 				auto units = live_control_state_->SnapshotUnitMetadata();
 				if (units) {
 					::highbar::v1::LiveSnapshotMetadata metadata;
-					*metadata.mutable_basis() = live_control_state_->RecordBasis(
+					auto basis = live_control_state_->RecordBasis(
 						update.seq(), update.frame(), update.send_monotonic_ns(), effective_cadence_frames,
 						std::chrono::milliseconds(live_max_observation_age_ms_), snapshot_emitted_at);
+					*metadata.mutable_basis() = basis;
 					metadata.set_perspective_team_id(circuit->GetTeamId());
 					for (auto& unit : *units) *metadata.add_units() = std::move(unit);
 					coordinator_client_->ReportLiveSnapshot(metadata);
+					BuildAndReportTacticalSnapshot(basis);
 				}
 			}
 		}
@@ -1549,7 +1837,9 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						fresh_target = circuit->GetEnemyInfo(static_cast<ICoreUnit::Id>(entry.live_attack_target->id()));
 						if (fresh_target == nullptr || fresh_target->IsHidden() || !fresh_target->IsInLOS()) return false;
 					}
-					const bool applied = grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
+					const bool applied = entry.live_tactical_command
+						? grpc::DispatchTacticalCommand(circuit, fresh_actor, *entry.live_tactical_command)
+						: grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
 					if (!applied) AppendCoordinatorTrace("live dispatch refused reason=engine_arm");
 					return applied;
 				}) : grpc::LiveFenceResult{};

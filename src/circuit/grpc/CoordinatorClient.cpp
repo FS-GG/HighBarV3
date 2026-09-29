@@ -209,7 +209,7 @@ void CoordinatorClient::LiveControlReaderLoop(LiveControlState* state) {
 		}
 		::highbar::v1::LiveControlSubscribe sub;
 		sub.set_plugin_id(plugin_id_); sub.set_schema_version(::highbar::v1::kSchemaVersion);
-		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_TACTICAL_V1);
 		sub.set_process_incarnation(state->ProcessIncarnation());
 		sub.set_match_incarnation(state->MatchIncarnation());
 		sub.set_command_channel_incarnation(state->CommandChannelIncarnation());
@@ -253,7 +253,7 @@ void CoordinatorClient::LiveCommandReaderLoop(CommandQueue* sink, LiveControlSta
 		}
 		::highbar::v1::LiveCommandSubscribe sub;
 		sub.set_plugin_id(plugin_id_); sub.set_schema_version(::highbar::v1::kSchemaVersion);
-		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_TACTICAL_V1);
 		sub.mutable_binding()->set_plugin_id(plugin_id_);
 		sub.mutable_binding()->set_process_incarnation(state->ProcessIncarnation());
 		sub.mutable_binding()->set_match_incarnation(state->MatchIncarnation());
@@ -281,7 +281,7 @@ void CoordinatorClient::QueueLiveStateReport(::highbar::v1::LiveStateReport repo
 	if (!live_state_ || live_stopping_.load(std::memory_order_acquire)) return;
 	auto* reporter = report.mutable_reporter();
 	reporter->set_plugin_id(plugin_id_); reporter->set_schema_version(::highbar::v1::kSchemaVersion);
-	reporter->set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+	reporter->set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_TACTICAL_V1);
 	reporter->set_process_incarnation(live_state_->ProcessIncarnation());
 	reporter->set_match_incarnation(live_state_->MatchIncarnation());
 	reporter->set_state_channel_incarnation(live_state_->StateChannelIncarnation());
@@ -293,12 +293,17 @@ void CoordinatorClient::QueueLiveStateReport(::highbar::v1::LiveStateReport repo
 			// live arm is impossible until the broker has recorded it. Snapshot
 			// reports are periodic, so evicting the oldest snapshot retains the
 			// newest bounded view without blocking the engine thread.
+			auto is_periodic_snapshot = [](const auto& queued) {
+				return queued.body_case() == ::highbar::v1::LiveStateReport::kSnapshot
+					|| queued.body_case() == ::highbar::v1::LiveStateReport::kTacticalSnapshot;
+			};
 			auto victim = std::find_if(live_reports_.begin(), live_reports_.end(),
 				[](const auto& queued) {
-					return queued.body_case() == ::highbar::v1::LiveStateReport::kSnapshot;
+					return queued.body_case() == ::highbar::v1::LiveStateReport::kSnapshot
+						|| queued.body_case() == ::highbar::v1::LiveStateReport::kTacticalSnapshot;
 				});
 			if (victim == live_reports_.end()) {
-				if (report.body_case() == ::highbar::v1::LiveStateReport::kSnapshot) return;
+				if (is_periodic_snapshot(report)) return;
 				live_reports_.pop_front();
 			} else {
 				live_reports_.erase(victim);
@@ -314,6 +319,16 @@ void CoordinatorClient::ReportLiveCapabilities(const ::highbar::v1::LiveNativeCa
 }
 void CoordinatorClient::ReportLiveSnapshot(const ::highbar::v1::LiveSnapshotMetadata& s) {
 	::highbar::v1::LiveStateReport report; *report.mutable_snapshot() = s; QueueLiveStateReport(std::move(report));
+}
+void CoordinatorClient::ReportTacticalCatalogue(const ::highbar::v1::TacticalCataloguePage& p) {
+	::highbar::v1::LiveStateReport report;
+	*report.mutable_tactical_catalogue() = p;
+	QueueLiveStateReport(std::move(report));
+}
+void CoordinatorClient::ReportTacticalSnapshot(const ::highbar::v1::TacticalSnapshotMetadata& s) {
+	::highbar::v1::LiveStateReport report;
+	*report.mutable_tactical_snapshot() = s;
+	QueueLiveStateReport(std::move(report));
 }
 
 void CoordinatorClient::LiveReportWorkerLoop() {

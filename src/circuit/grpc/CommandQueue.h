@@ -42,6 +42,7 @@ struct QueuedCommand {
 	::highbar::v1::NativeObservationBasis live_basis;
 	::highbar::v1::NativeUnitReference live_actor;
 	std::optional<::highbar::v1::NativeUnitReference> live_attack_target;
+	std::optional<::highbar::v1::NativeTacticalCommand> live_tactical_command;
 	::highbar::v1::LiveSemanticAction live_semantic_action =
 		::highbar::v1::LIVE_SEMANTIC_ACTION_UNSPECIFIED;
 	std::chrono::steady_clock::time_point live_basis_deadline{};

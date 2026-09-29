@@ -235,4 +235,78 @@ TEST(LiveControlState, ReplacedControlIncarnationCannotReuseAuthority) {
 	EXPECT_EQ(state->ApplyDirective(fresh,LiveControlState::Clock::time_point{}).disposition(),
 	          LIVE_CONTROL_ACK_RECORDED);
 }
+
+TEST(LiveControlState, TacticalFeatureQueueAndDescriptorFencesAreRechecked) {
+	auto state=State();
+	const auto actor_lifetime=state->MarkOwnedPresent(0);
+	state->RecordTacticalCatalogue("catalogue",7,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(7);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(actor_lifetime); actor->set_descriptor_revision(9);
+	auto* descriptor=actor->add_descriptors(); descriptor->set_kind(NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE);
+	auto* queue=actor->add_queue(); queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); queue->set_revision(11); queue->set_complete(true);
+	auto* feature=snapshot.add_features(); feature->mutable_reference()->set_id(0); feature->mutable_reference()->set_lifetime(55); feature->set_definition_id(3);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch batch; batch.mutable_actor()->set_id(0); batch.mutable_actor()->set_lifetime(actor_lifetime);
+	auto* tactical=batch.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(7);
+	tactical->set_actor_descriptor_revision(9); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(11);
+	tactical->mutable_reclaim_feature()->mutable_target()->set_id(0); tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(55);
+	tactical->mutable_reclaim_feature()->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	EXPECT_TRUE(state->CheckTacticalCommand(batch).ok);
+
+	tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(56);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_FEATURE_LIFETIME_CHANGED);
+	tactical->mutable_reclaim_feature()->mutable_target()->set_lifetime(55);
+	snapshot.mutable_actors(0)->mutable_queue(0)->set_revision(12); state->RecordTacticalSnapshot(snapshot);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_QUEUE_CHANGED);
+	snapshot.mutable_actors(0)->mutable_queue(0)->set_revision(11);
+	snapshot.mutable_actors(0)->mutable_descriptors(0)->set_disabled(true); state->RecordTacticalSnapshot(snapshot);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CAPABILITY_CHANGED);
+}
+
+TEST(LiveControlState, TacticalBuildDefinitionBusyPolicyAndRallyFailClosed) {
+	auto state=State(); const auto lifetime=state->MarkOwnedPresent(0);
+	state->RecordTacticalCatalogue("catalogue",8,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(8);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(10);
+	auto* build=actor->add_descriptors(); build->set_kind(NATIVE_TACTICAL_DESCRIPTOR_BUILD); build->add_allowed_definition_ids(42);
+	auto* queue=actor->add_queue(); queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); queue->set_revision(12); queue->set_complete(true); queue->add_entries()->set_native_tag(5);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch batch; batch.mutable_actor()->set_id(0); batch.mutable_actor()->set_lifetime(lifetime);
+	auto* tactical=batch.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(8); tactical->set_actor_descriptor_revision(10); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(12);
+	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(10); intent->mutable_position()->set_z(20); intent->set_facing(NATIVE_BUILD_FACING_SOUTH); intent->set_queue_policy(NATIVE_QUEUE_POLICY_REJECT_IF_BUSY);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_PARAMETER_REFUSED);
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE); EXPECT_TRUE(state->CheckTacticalCommand(batch).ok);
+	intent->set_definition_id(43); EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_PARAMETER_REFUSED);
+
+	tactical->mutable_set_rally()->mutable_position()->set_x(1);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CAPABILITY_CHANGED);
+	state->RecordTacticalCatalogue("catalogue",8,false);
+	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CATALOGUE_INCOMPLETE);
+}
+
+TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOptions) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto lifetime=state->MarkOwnedPresent(0);
+	const auto basis=state->RecordBasis(80,100,8000,1,std::chrono::milliseconds(500),t0);
+	state->RecordTacticalCatalogue("catalogue",9,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue"); snapshot.set_catalogue_revision(9);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(0); actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(13);
+	auto* descriptor=actor->add_descriptors(); descriptor->set_kind(NATIVE_TACTICAL_DESCRIPTOR_BUILD); descriptor->add_allowed_definition_ids(42);
+	auto* observed=actor->add_queue(); observed->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); observed->set_revision(14); observed->set_complete(true);
+	state->RecordTacticalSnapshot(snapshot);
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+	live.mutable_actor()->set_id(0); live.mutable_actor()->set_lifetime(lifetime); live.set_semantic_action(LIVE_SEMANTIC_ACTION_BUILD);
+	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500); live.set_remaining_lease_validity_ms(500);
+	auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue"); tactical->set_catalogue_revision(9); tactical->set_actor_descriptor_revision(13); tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER); tactical->set_expected_queue_revision(14);
+	auto* intent=tactical->mutable_build(); intent->set_definition_id(42); intent->mutable_position()->set_x(100); intent->mutable_position()->set_elevation(5); intent->mutable_position()->set_z(200); intent->set_facing(NATIVE_BUILD_FACING_SOUTH); intent->set_queue_policy(NATIVE_QUEUE_POLICY_APPEND);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1); batch->set_target_unit_id(0);
+	auto* legacy=batch->add_commands()->mutable_build_unit(); legacy->set_unit_id(0); legacy->set_to_build_unit_def_id(42); legacy->set_options(32); legacy->set_facing(2); legacy->mutable_build_position()->set_x(100); legacy->mutable_build_position()->set_y(5); legacy->mutable_build_position()->set_z(200);
+	CommandQueue queue(nullptr,3);
+	EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	live.mutable_batch()->set_batch_seq(2); live.mutable_batch()->set_client_command_id(2); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->set_facing(1);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+	live.mutable_batch()->set_batch_seq(3); live.mutable_batch()->set_client_command_id(3); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->set_facing(2); live.mutable_batch()->mutable_commands(0)->mutable_build_unit()->mutable_build_position()->set_x(101);
+	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+}
 } // namespace

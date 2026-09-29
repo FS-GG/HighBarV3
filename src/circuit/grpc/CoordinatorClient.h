@@ -63,6 +63,8 @@ public:
 	void StartLiveChannels(CommandQueue* sink, LiveControlState* live_state);
 	void ReportLiveCapabilities(const ::highbar::v1::LiveNativeCapabilities& capabilities);
 	void ReportLiveSnapshot(const ::highbar::v1::LiveSnapshotMetadata& snapshot);
+	void ReportTacticalCatalogue(const ::highbar::v1::TacticalCataloguePage& page);
+	void ReportTacticalSnapshot(const ::highbar::v1::TacticalSnapshotMetadata& snapshot);
 
 	bool IsConnected() const { return connected_.load(std::memory_order_acquire); }
 	std::uint64_t OkCount() const { return ok_count_.load(std::memory_order_acquire); }

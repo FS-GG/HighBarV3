@@ -19,6 +19,7 @@
 #pragma once
 
 #include "highbar/commands.pb.h"
+#include "highbar/live_control.pb.h"
 
 #include <cstdint>
 #include <optional>
@@ -84,5 +85,9 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
                      ::circuit::CCircuitUnit* unit,
                      const ::highbar::v1::AICommand& cmd,
                      ::circuit::CEnemyInfo* selected_attack_target = nullptr);
+
+bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
+	::circuit::CCircuitUnit* unit,
+	const ::highbar::v1::NativeTacticalCommand& command);
 
 }  // namespace circuit::grpc

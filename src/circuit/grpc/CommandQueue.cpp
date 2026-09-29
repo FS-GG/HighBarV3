@@ -7,6 +7,7 @@
 #include "grpc/LiveControlState.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -142,6 +143,25 @@ CommandBatchResult AdmitLiveCommandBatch(
 		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
 	const auto& cmd = batch.commands(0);
 	bool semantic_ok = false;
+	auto actor_matches = [&](std::int32_t id) {
+		return id >= 0 && static_cast<std::uint32_t>(id) == live.actor().id();
+	};
+	auto policy_options = [](::highbar::v1::NativeQueuePolicy policy) -> std::uint32_t {
+		return policy == ::highbar::v1::NATIVE_QUEUE_POLICY_APPEND ? 32u : 0u;
+	};
+	auto same_position = [](const ::highbar::v1::Vector3& legacy,
+	                        const ::highbar::v1::NativePosition3& typed) {
+		return std::isfinite(typed.x()) && std::isfinite(typed.z())
+			&& (!typed.has_elevation() || std::isfinite(typed.elevation()))
+			&& legacy.x() == typed.x() && legacy.z() == typed.z()
+			&& legacy.y() == (typed.has_elevation() ? typed.elevation() : 0.0f);
+	};
+	auto native_facing = [](::highbar::v1::NativeBuildFacing facing) {
+		return facing == ::highbar::v1::NATIVE_BUILD_FACING_NORTH ? 0
+			: facing == ::highbar::v1::NATIVE_BUILD_FACING_EAST ? 1
+			: facing == ::highbar::v1::NATIVE_BUILD_FACING_SOUTH ? 2
+			: facing == ::highbar::v1::NATIVE_BUILD_FACING_WEST ? 3 : -1;
+	};
 	switch (live.semantic_action()) {
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_STOP:
 		semantic_ok = cmd.command_case() == ::highbar::v1::AICommand::kStop
@@ -168,9 +188,132 @@ CommandBatchResult AdmitLiveCommandBatch(
 			&& cmd.attack().target_unit_id() >= 0
 			&& static_cast<std::uint32_t>(cmd.attack().target_unit_id()) == live.visible_attack_target().id();
 		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_BUILD:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kBuild
+			&& cmd.command_case() == ::highbar::v1::AICommand::kBuildUnit
+			&& actor_matches(cmd.build_unit().unit_id())
+			&& cmd.build_unit().to_build_unit_def_id()
+				== static_cast<std::int32_t>(live.tactical_command().build().definition_id())
+			&& cmd.build_unit().options() == policy_options(live.tactical_command().build().queue_policy())
+			&& same_position(cmd.build_unit().build_position(), live.tactical_command().build().position())
+			&& cmd.build_unit().facing() == native_facing(live.tactical_command().build().facing());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kGuard
+			&& cmd.command_case() == ::highbar::v1::AICommand::kGuard
+			&& actor_matches(cmd.guard().unit_id())
+			&& cmd.guard().guard_unit_id() == static_cast<std::int32_t>(live.tactical_command().guard().target().id())
+			&& cmd.guard().options() == policy_options(live.tactical_command().guard().queue_policy());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kRepair
+			&& cmd.command_case() == ::highbar::v1::AICommand::kRepair
+			&& actor_matches(cmd.repair().unit_id())
+			&& cmd.repair().repair_unit_id() == static_cast<std::int32_t>(live.tactical_command().repair().target().id())
+			&& cmd.repair().options() == policy_options(live.tactical_command().repair().queue_policy());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_UNIT:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kReclaimUnit
+			&& cmd.command_case() == ::highbar::v1::AICommand::kReclaimUnit
+			&& actor_matches(cmd.reclaim_unit().unit_id())
+			&& cmd.reclaim_unit().reclaim_unit_id() == static_cast<std::int32_t>(live.tactical_command().reclaim_unit().target().id())
+			&& cmd.reclaim_unit().options() == policy_options(live.tactical_command().reclaim_unit().queue_policy());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_FEATURE:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kReclaimFeature
+			&& cmd.command_case() == ::highbar::v1::AICommand::kReclaimFeature
+			&& actor_matches(cmd.reclaim_feature().unit_id())
+			&& cmd.reclaim_feature().feature_id() == static_cast<std::int32_t>(live.tactical_command().reclaim_feature().target().id())
+			&& cmd.reclaim_feature().options() == policy_options(live.tactical_command().reclaim_feature().queue_policy());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_AREA:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kReclaimArea
+			&& cmd.command_case() == ::highbar::v1::AICommand::kReclaimInArea
+			&& actor_matches(cmd.reclaim_in_area().unit_id())
+			&& cmd.reclaim_in_area().options() == policy_options(live.tactical_command().reclaim_area().queue_policy())
+			&& same_position(cmd.reclaim_in_area().position(), live.tactical_command().reclaim_area().center())
+			&& cmd.reclaim_in_area().radius() == live.tactical_command().reclaim_area().radius_world_units();
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kFactoryProduce
+			&& live.tactical_command().factory_produce().count() == 1
+			&& cmd.command_case() == ::highbar::v1::AICommand::kBuildUnit
+			&& actor_matches(cmd.build_unit().unit_id())
+			&& cmd.build_unit().to_build_unit_def_id() == static_cast<std::int32_t>(live.tactical_command().factory_produce().definition_id())
+			&& cmd.build_unit().options() == policy_options(live.tactical_command().factory_produce().queue_policy());
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_SET_RALLY:
+		semantic_ok = false;  // installed engine cannot observe factory rally queue
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_QUEUE_EDIT:
+		if (live.has_tactical_command()
+		    && live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kQueueEdit) {
+			const auto& edit = live.tactical_command().queue_edit();
+			const auto domain_options = edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION ? 64u : 0u;
+			if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT) {
+				semantic_ok = cmd.command_case()==::highbar::v1::AICommand::kSetRepeat
+					&& actor_matches(cmd.set_repeat().unit_id()) && cmd.set_repeat().options()==0
+					&& cmd.set_repeat().repeat()==edit.repeat();
+			} else if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG) {
+				semantic_ok = cmd.command_case()==::highbar::v1::AICommand::kCustom
+					&& actor_matches(cmd.custom().unit_id()) && cmd.custom().command_id()==2
+					&& cmd.custom().options()==domain_options && cmd.custom().params_size()==1
+					&& cmd.custom().params(0)==static_cast<float>(edit.remove_native_tag());
+			} else if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT && edit.has_insert()) {
+				semantic_ok = cmd.command_case()==::highbar::v1::AICommand::kCustom
+					&& actor_matches(cmd.custom().unit_id()) && cmd.custom().command_id()==1
+					&& cmd.custom().options()==domain_options && cmd.custom().params_size()>=3
+					&& static_cast<std::int32_t>(cmd.custom().params(0))==edit.insert().before_native_tag()
+					&& cmd.custom().params(0)==static_cast<float>(edit.insert().before_native_tag())
+					&& cmd.custom().params(2)==0.0f;
+				if (semantic_ok) {
+					const auto& insert=edit.insert(); const auto legacy_id=static_cast<std::int32_t>(cmd.custom().params(1));
+					switch(insert.action()) {
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE:
+						semantic_ok=legacy_id==10&&insert.has_position()&&cmd.custom().params_size()==6
+							&&cmd.custom().params(3)==insert.position().x()&&cmd.custom().params(4)==(insert.position().has_elevation()?insert.position().elevation():0.0f)&&cmd.custom().params(5)==insert.position().z(); break;
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_BUILD:
+						semantic_ok=insert.has_definition_id()&&legacy_id==-static_cast<std::int32_t>(insert.definition_id())&&insert.has_position()&&cmd.custom().params_size()==7
+							&&cmd.custom().params(3)==insert.position().x()&&cmd.custom().params(4)==(insert.position().has_elevation()?insert.position().elevation():0.0f)&&cmd.custom().params(5)==insert.position().z()&&cmd.custom().params(6)==2.0f; break;
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE:
+						semantic_ok=insert.has_definition_id()&&legacy_id==-static_cast<std::int32_t>(insert.definition_id())&&cmd.custom().params_size()==3; break;
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD:
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR:
+					case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_UNIT: {
+						const int expected=insert.action()==::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD?25:insert.action()==::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR?40:90;
+						semantic_ok=insert.has_unit_target()&&legacy_id==expected&&cmd.custom().params_size()==4&&cmd.custom().params(3)==static_cast<float>(insert.unit_target().id()); break; }
+					default: semantic_ok=false; break;
+					}
+				}
+			}
+		}
+		break;
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_BAR_CONSTRUCTION_PRIORITY:
+	case ::highbar::v1::LIVE_SEMANTIC_ACTION_BAR_CLOAK_DESIRE:
+		semantic_ok = live.has_tactical_command()
+			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kTacticalMode
+			&& live.tactical_command().tactical_mode().kind()==(
+				live.semantic_action()==::highbar::v1::LIVE_SEMANTIC_ACTION_BAR_CONSTRUCTION_PRIORITY
+				? ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY
+				: ::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE)
+			&& cmd.command_case() == ::highbar::v1::AICommand::kCustom
+			&& actor_matches(cmd.custom().unit_id()) && cmd.custom().options() == 0
+			&& cmd.custom().command_id()==(live.semantic_action()==::highbar::v1::LIVE_SEMANTIC_ACTION_BAR_CONSTRUCTION_PRIORITY?34571:37382)
+			&& cmd.custom().params_size()==1
+			&& cmd.custom().params(0)==(live.tactical_command().tactical_mode().value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED?1.0f:0.0f);
+		break;
 	default: break;
 	}
 	if (!semantic_ok) return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
+	if (live.has_tactical_command() && !state.CheckTacticalCommand(live).ok)
+		return {CommandBatchAdmissionStatus::kInvalidTarget, 0};
 	if (batch.batch_seq() == 0)
 		return {CommandBatchAdmissionStatus::kInvalidBatchSequence, 0};
 	if (!state.LiveBatchFresh(live))
@@ -183,6 +326,7 @@ CommandBatchResult AdmitLiveCommandBatch(
 	q.authoritative_target_unit_id = static_cast<std::int32_t>(live.actor().id()); q.command = cmd;
 	q.live = true; q.live_binding = live.binding(); q.live_basis = live.basis(); q.live_actor = live.actor();
 	if (live.has_visible_attack_target()) q.live_attack_target = live.visible_attack_target();
+	if (live.has_tactical_command()) q.live_tactical_command = live.tactical_command();
 	q.live_semantic_action = live.semantic_action();
 	q.live_basis_deadline = std::min(
 		*native_basis_expiry,

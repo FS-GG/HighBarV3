@@ -16,6 +16,7 @@
 namespace springai {
 	class Command;
 	class Weapon;
+	class Feature;
 }
 
 namespace terrain {
@@ -158,6 +159,7 @@ public:
 	void CmdBuild(CCircuitDef* buildDef, const springai::AIFloat3& buildPos, int facing, short options = 0, int timeout = INT_MAX);
 	void CmdReclaimEnemy(CEnemyInfo* enemy, short options = 0, int timeout = INT_MAX);
 	void CmdReclaimUnit(CAllyUnit* toReclaim, short options = 0, int timeout = INT_MAX);
+	void CmdReclaimFeature(springai::Feature* toReclaim, short options = 0, int timeout = INT_MAX);
 	void CmdReclaimInArea(const springai::AIFloat3& pos, float radius, short options = 0, int timeout = INT_MAX);
 	void CmdResurrectInArea(const springai::AIFloat3& pos, float radius, short options = 0, int timeout = INT_MAX);
 	void CmdSetFireState(CCircuitDef::FireT state);

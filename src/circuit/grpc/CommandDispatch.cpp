@@ -21,7 +21,14 @@
 #include <Figure.h>
 #include <Economy.h>
 #include <Resource.h>
+#include <Feature.h>
+#include <Map.h>
 #include "spring/SpringCallback.h"
+#include "spring/SpringMap.h"
+#include "util/Utils.h"
+#include "util/Defines.h"
+#include "ExternalAI/Interface/AISCommands.h"
+#include "Sim/Units/CommandAI/Command.h"
 
 #include <climits>
 #include <exception>
@@ -31,9 +38,70 @@ namespace circuit::grpc {
 
 namespace {
 
+constexpr float kMaximumTacticalAreaRadius = 2048.0f;
+
+short TacticalOptions(::highbar::v1::NativeQueuePolicy policy) {
+	return policy == ::highbar::v1::NATIVE_QUEUE_POLICY_APPEND
+		? UNIT_COMMAND_OPTION_SHIFT_KEY : 0;
+}
+
+int NativeFacing(::highbar::v1::NativeBuildFacing facing) {
+	switch (facing) {
+	case ::highbar::v1::NATIVE_BUILD_FACING_NORTH: return UNIT_FACING_NORTH;
+	case ::highbar::v1::NATIVE_BUILD_FACING_EAST: return UNIT_FACING_EAST;
+	case ::highbar::v1::NATIVE_BUILD_FACING_SOUTH: return UNIT_FACING_SOUTH;
+	case ::highbar::v1::NATIVE_BUILD_FACING_WEST: return UNIT_FACING_WEST;
+	default: return UNIT_NO_FACING;
+	}
+}
+
 springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 	return springai::AIFloat3(v.x(), v.y(), v.z());
 }
+
+}  // namespace
+
+bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
+		::circuit::CCircuitUnit* unit,
+		const ::highbar::v1::NativeTacticalCommand& command) {
+	if (ai == nullptr || unit == nullptr || unit->GetUnit() == nullptr) return false;
+	auto* native = unit->GetUnit();
+	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
+		return ai->GetTeamUnit(static_cast<ICoreUnit::Id>(ref.id()));
+	};
+	auto position = [](const ::highbar::v1::NativePosition3& p) {
+		return springai::AIFloat3(p.x(), p.has_elevation() ? p.elevation() : 0.0f, p.z());
+	};
+	switch (command.action_case()) {
+	case ::highbar::v1::NativeTacticalCommand::kBuild: {
+		const auto& body = command.build();
+		auto* def = ai->GetCircuitDefSafe(body.definition_id());
+		if (def == nullptr || !unit->GetCircuitDef()->CanBuild(def)) return false;
+		const auto pos = position(body.position());
+		const int facing = NativeFacing(body.facing());
+		auto* map = ai->GetMap();
+		if (map == nullptr || facing < 0 || !std::isfinite(pos.x)
+		    || !std::isfinite(pos.y) || !std::isfinite(pos.z)
+		    || !map->IsPossibleToBuildAt(def->GetDef(), pos, facing)) return false;
+		unit->CmdBuild(def, pos, facing, TacticalOptions(body.queue_policy()));
+		return true;
+	}
+	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce:{const auto& body=command.factory_produce();if(body.count()!=1)return false;auto* def=ai->GetCircuitDefSafe(body.definition_id());if(def==nullptr||!unit->GetCircuitDef()->CanBuild(def))return false;unit->CmdBuild(def,native->GetPos(),UNIT_NO_FACING,TacticalOptions(body.queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit:{auto* target=friendly(command.reclaim_unit().target());if(target==nullptr||target->IsDead())return false;unit->CmdReclaimUnit(target,TacticalOptions(command.reclaim_unit().queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kReclaimFeature:{auto features=ai->GetCallback()->GetFeatures();springai::Feature* selected=nullptr;for(auto* f:features)if(f!=nullptr&&f->GetFeatureId()==static_cast<int>(command.reclaim_feature().target().id())){selected=f;break;}if(selected==nullptr){utils::free_clear(features);return false;}unit->CmdReclaimFeature(selected,TacticalOptions(command.reclaim_feature().queue_policy()));utils::free_clear(features);return true;}
+	case ::highbar::v1::NativeTacticalCommand::kReclaimArea:{const auto& body=command.reclaim_area();if(!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>kMaximumTacticalAreaRadius)return false;unit->CmdReclaimInArea(position(body.center()),body.radius_world_units(),TacticalOptions(body.queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kSetRally:return false;
+	case ::highbar::v1::NativeTacticalCommand::kQueueEdit:{const auto& edit=command.queue_edit();short outer=edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION?UNIT_COMMAND_OPTION_CONTROL_KEY:0;if(edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY)return false;if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG){native->ExecuteCustomCommand(CMD_REMOVE,{static_cast<float>(edit.remove_native_tag())},outer);return true;}if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT){native->SetRepeat(edit.repeat());return true;}if(edit.kind()!=::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT||!edit.has_insert())return false;const auto& in=edit.insert();int id=0;short inserted_options=0;std::vector<float> params;
+			switch(in.action()){case ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE:id=CMD_MOVE;if(!in.has_position())return false;params={in.position().x(),in.position().has_elevation()?in.position().elevation():0.0f,in.position().z()};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_BUILD:if(!in.has_definition_id()||!in.has_position())return false;id=-static_cast<int>(in.definition_id());params={in.position().x(),in.position().has_elevation()?in.position().elevation():0.0f,in.position().z(),static_cast<float>(UNIT_FACING_SOUTH)};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE:if(!in.has_definition_id())return false;id=-static_cast<int>(in.definition_id());break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD:id=CMD_GUARD;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR:id=CMD_REPAIR;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_UNIT:id=CMD_RECLAIM;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;default:return false;}
+			std::vector<float> encoded{static_cast<float>(in.before_native_tag()),static_cast<float>(id),static_cast<float>(inserted_options)};encoded.insert(encoded.end(),params.begin(),params.end());native->ExecuteCustomCommand(CMD_INSERT,std::move(encoded),outer);return true;}
+	case ::highbar::v1::NativeTacticalCommand::kTacticalMode:{const auto& mode=command.tactical_mode();int id=mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY?34571:mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE?37382:0;if(id==0)return false;float value=mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED?1.0f:mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_DISABLED?0.0f:-1.0f;if(value<0)return false;native->ExecuteCustomCommand(id,{value});return true;}
+	default:return false;
+	}
+}
+
+namespace {
 
 short OptionsOf(const ::highbar::v1::AICommand& cmd) {
 	// Each unit-order command carries its own `options` uint32. For the
