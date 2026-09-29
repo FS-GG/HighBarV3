@@ -769,8 +769,17 @@ void CGrpcGatewayModule::OnEnemyLeaveRadar(CEnemyInfo* enemy) {
 void CGrpcGatewayModule::OnEnemyDamaged(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
+		// The engine event exposes no damage amount. Refresh the authoritative
+		// visible-unit cache from Spring instead of publishing damage=0 as a
+		// guessed health decrement, then replace the sparse event with a full
+		// snapshot at the end of this frame.
+		if (enemy->IsInLOS() && enemy->GetUnit() != nullptr
+		    && enemy->GetCircuitDef() != nullptr) {
+			enemy->GetData()->UpdateInLosData();
+		}
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_damaged();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
+		state_update_order_.RequestFullStateReplacement();
 	});
 }
 
@@ -780,6 +789,7 @@ void CGrpcGatewayModule::OnEnemyDestroyed(CEnemyInfo* enemy) {
 		if (live_control_state_) live_control_state_->MarkEnemyRemoved(static_cast<std::uint32_t>(enemy->GetId()));
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_destroyed();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
+		state_update_order_.RequestFullStateReplacement();
 	});
 }
 
@@ -874,32 +884,43 @@ void CGrpcGatewayModule::OnFrameTick() {
 			current_frame_.store(frame, std::memory_order_release);
 			const std::size_t own_units_count = circuit != nullptr
 				? circuit->GetTeamUnits().size() : 0;
+			if (state_update_order_.ReplacementPending()) {
+				// Reuse SnapshotTick's forced-emission path so replacement
+				// snapshots retain cadence metadata and coalesce in one frame.
+				snapshot_tick_.PendingRequest().store(true, std::memory_order_release);
+			}
 			const auto pump = snapshot_tick_.Pump(frame, own_units_count);
-			if (pump.emit) {
+
+			// Emit an EconomyTick every 30 frames (1s at 30Hz). Keeps the
+			// observers' economy plot moving without flooding the delta stream.
+			static constexpr std::uint32_t kEconomyEveryNFrames = 30;
+			const auto frames = counters_ != nullptr
+				? counters_->frames_since_bind.load() : 0u;
+			if (frames > 0 && frames % kEconomyEveryNFrames == 0) {
+				OnEconomyTick();
+			}
+
+			const auto update_plan = state_update_order_.Plan(
+				pump.emit, current_frame_delta_.events_size() > 0);
+			if (update_plan.snapshot_before_delta) {
 				BroadcastSnapshot(pump.effective_cadence_frames);
 			}
-		}
 
-		// Emit an EconomyTick every 30 frames (1s at 30Hz). Keeps the
-		// observers' economy plot moving without flooding the delta stream.
-		static constexpr std::uint32_t kEconomyEveryNFrames = 30;
-		const auto frames = counters_ != nullptr
-			? counters_->frames_since_bind.load() : 0u;
-		if (frames > 0 && frames % kEconomyEveryNFrames == 0) {
-			OnEconomyTick();
-		}
-
-		// T038: flush accumulated delta. Take the exclusive lock only for
-		// the serialize-and-publish step; the append path above is
-		// engine-thread-owned and holds nothing.
-		if (current_frame_delta_.events_size() > 0) {
-			FlushDelta();
-			frames_since_last_flush_ = 0;
-		} else {
-			++frames_since_last_flush_;
-			if (frames_since_last_flush_ >= kKeepAliveFrames) {
-				EmitKeepAlive();
+			// T038: flush accumulated delta. For damage/destroy replacement,
+			// legacy and dispatch events receive the lower sequence and the
+			// complete snapshot is the final update from this frame.
+			if (update_plan.flush_delta) {
+				FlushDelta(update_plan.snapshot_after_delta);
 				frames_since_last_flush_ = 0;
+			} else {
+				++frames_since_last_flush_;
+				if (frames_since_last_flush_ >= kKeepAliveFrames) {
+					EmitKeepAlive();
+					frames_since_last_flush_ = 0;
+				}
+			}
+			if (update_plan.snapshot_after_delta) {
+				BroadcastSnapshot(pump.effective_cadence_frames);
 			}
 		}
 	} catch (...) {
@@ -909,7 +930,7 @@ void CGrpcGatewayModule::OnFrameTick() {
 	}
 }
 
-void CGrpcGatewayModule::FlushDelta() {
+void CGrpcGatewayModule::FlushDelta(bool project_complete_world_state) {
 	// T014 — guard the serializer hot path. OOM or protobuf failure here
 	// transitions to Disabled with subsystem=serialization.
 	try {
@@ -933,13 +954,20 @@ void CGrpcGatewayModule::FlushDelta() {
 		}
 		delta_bus_->Publish(frozen);
 
-		// Phase B — client-mode push. The coordinator receives the
-		// same StateUpdate that the in-process ring stores, so any
-		// external observer attached to the coordinator sees a feed
-		// equivalent to what server-mode StreamState would have
-		// produced. Serialization is already done; we pass the object
-		// itself (gRPC does its own copy for wire-level framing).
-		if (coordinator_client_) coordinator_client_->PushStateUpdate(update);
+		// Client-mode consumers require complete world facts at damage and
+		// destroy boundaries. Preserve the exact legacy delta in ring/DeltaBus,
+		// but remove only those two sparse arms from the coordinator projection;
+		// the complete replacement snapshot follows at seq+1.
+		if (coordinator_client_) {
+			if (project_complete_world_state) {
+				::highbar::v1::StateUpdate projection;
+				if (grpc::BuildCoordinatorDeltaProjection(update, &projection)) {
+					coordinator_client_->PushStateUpdate(projection);
+				}
+			} else {
+				coordinator_client_->PushStateUpdate(update);
+			}
+		}
 
 		if (counters_ != nullptr) {
 			counters_->RecordFrameFlushUs(NowMicros() - t0);

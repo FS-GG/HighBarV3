@@ -41,6 +41,7 @@
 #include "grpc/Config.h"
 #include "grpc/AdminController.h"
 #include "grpc/SnapshotTick.h"
+#include "grpc/StateUpdateProjection.h"
 
 namespace circuit::grpc {
 class HighBarService;
@@ -266,7 +267,7 @@ private:
 
 	// T038 helper: serialize + publish current_frame_delta_.
 	// Called from OnFrameTick under the exclusive lock.
-	void FlushDelta();
+	void FlushDelta(bool project_complete_world_state = false);
 	// T039 helper: emit a KeepAlive StateUpdate on the bus + ring.
 	void EmitKeepAlive();
 	// T057 helper: drain CommandQueue, dispatch each via
@@ -296,6 +297,9 @@ private:
 
 	// 003-snapshot-arm-coverage — periodic-snapshot scheduler.
 	::circuit::grpc::SnapshotTick snapshot_tick_;
+	// Sparse damage/destroy events remain on the legacy delta stream, then
+	// a complete current snapshot replaces their insufficient world facts.
+	::circuit::grpc::StateUpdateOrder state_update_order_;
 
 	// 003-snapshot-arm-coverage — atomic mirror of the current engine
 	// frame. Written from OnFrameTick on the engine thread; read from
