@@ -52,6 +52,13 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+	# The tactical helper lands in the native implementation lane. Keep this
+	# contract checkpoint independently buildable while registering the helper
+	# as soon as the coherent join supplies it.
+	if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+		target_sources(highbar_command_queue_test_support PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+	endif ()
 	target_include_directories(highbar_command_queue_test_support PUBLIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
 	target_link_libraries(highbar_command_queue_test_support PUBLIC
@@ -88,6 +95,17 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			highbar_command_queue_test_support
 			GTest::gtest GTest::gtest_main)
 		add_test(NAME live_control_state_test COMMAND live_control_state_test)
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_native_state_test.cc")
+			add_executable(tactical_native_state_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_native_state_test.cc")
+			target_include_directories(tactical_native_state_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(tactical_native_state_test PRIVATE
+				highbar_command_queue_test_support
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME tactical_native_state_test COMMAND tactical_native_state_test)
+		endif ()
 
 		add_executable(state_update_projection_test
 			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/state_update_projection_test.cc")
