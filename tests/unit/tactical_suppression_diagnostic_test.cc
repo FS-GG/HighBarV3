@@ -60,5 +60,50 @@ TEST(TacticalSuppressionDiagnosticTest, MessageContainsOnlyBoundedReasonAndCount
 	EXPECT_LT(message.size(), 160u);
 }
 
+TEST(TacticalSuppressionDiagnosticTest, TraceDisabledDoesNotReadCallbackMode) {
+	int reads = 0;
+	const auto mode = ReadCallbackFeatureVisibilityMode(false, [&] {
+		++reads;
+		return CallbackFeatureVisibilityMode::CheatsAllActive;
+	});
+	EXPECT_FALSE(mode.has_value());
+	EXPECT_EQ(reads, 0);
+}
+
+TEST(TacticalSuppressionDiagnosticTest, FeatureObservationNamesActualEnginePolicy) {
+	const auto normal = TacticalFeatureObservationTraceMessage({
+		CallbackFeatureVisibilityMode::NormalAllyTeamLos,
+		344, 344, 344, true, 512});
+	EXPECT_EQ(normal,
+		"tactical feature observation mode=normal "
+		"visibility_policy=engine_feature_is_in_los_for_allyteam "
+		"raw=344 valid=344 emitted=344 complete=1 limit=512");
+	const auto cheats = TacticalFeatureObservationTraceMessage({
+		CallbackFeatureVisibilityMode::CheatsAllActive,
+		513, std::nullopt, 0, false, 512});
+	EXPECT_EQ(cheats,
+		"tactical feature observation mode=cheats "
+		"visibility_policy=engine_all_active_features "
+		"raw=513 valid=unknown emitted=0 complete=0 limit=512");
+	EXPECT_LT(normal.size(), 200u);
+	EXPECT_LT(cheats.size(), 200u);
+}
+
+TEST(TacticalSuppressionDiagnosticTest, FeatureObservationEmitsFirstAndChangesOnly) {
+	TacticalFeatureObservationTraceState state;
+	TacticalFeatureObservation observation{
+		CallbackFeatureVisibilityMode::NormalAllyTeamLos,
+		344, 344, 344, true, 512};
+	EXPECT_TRUE(state.MaybeMessage(observation).has_value());
+	EXPECT_FALSE(state.MaybeMessage(observation).has_value());
+	observation.raw = 345;
+	observation.valid = 345;
+	observation.emitted = 345;
+	EXPECT_TRUE(state.MaybeMessage(observation).has_value());
+	EXPECT_FALSE(state.MaybeMessage(observation).has_value());
+	observation.mode = CallbackFeatureVisibilityMode::CheatsAllActive;
+	EXPECT_TRUE(state.MaybeMessage(observation).has_value());
+}
+
 }  // namespace
 }  // namespace circuit::grpc

@@ -180,6 +180,23 @@ void TraceTacticalSuppression(
 		AppendCoordinatorTrace(grpc::TacticalSuppressionTraceMessage(observation));
 }
 
+grpc::TacticalFeatureObservationTraceState& TacticalFeatureObservationTraceState() {
+	static grpc::TacticalFeatureObservationTraceState state;
+	return state;
+}
+
+void TraceTacticalFeatureObservation(
+		const std::optional<grpc::CallbackFeatureVisibilityMode>& mode,
+		std::size_t raw,
+		std::optional<std::size_t> valid,
+		std::size_t emitted,
+		bool complete) {
+	if (!mode.has_value()) return;
+	auto message = TacticalFeatureObservationTraceState().MaybeMessage({
+		*mode, raw, valid, emitted, complete, grpc::kTacticalFeatureCapacity});
+	if (message.has_value()) AppendCoordinatorTrace(*message);
+}
+
 std::string GlobalSpeedLuaMessage(float speed) {
 	std::ostringstream out;
 	out << "highbar_admin_speed:" << speed;
@@ -765,6 +782,19 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	fill_resource(econ->mutable_metal(), economy_manager != nullptr ? economy_manager->GetMetalRes() : nullptr);
 	fill_resource(econ->mutable_energy(), economy_manager != nullptr ? economy_manager->GetEnergyRes() : nullptr);
 
+	const auto feature_visibility_mode =
+		grpc::ReadCallbackFeatureVisibilityMode(CoordinatorTraceEnabled(), [&] {
+			auto* cheats = circuit->GetCheats();
+			if (cheats == nullptr)
+				return grpc::CallbackFeatureVisibilityMode::Unknown;
+			try {
+				return cheats->IsEnabled()
+					? grpc::CallbackFeatureVisibilityMode::CheatsAllActive
+					: grpc::CallbackFeatureVisibilityMode::NormalAllyTeamLos;
+			} catch (...) {
+				return grpc::CallbackFeatureVisibilityMode::Unknown;
+			}
+		});
 	auto features = callback->GetFeatures();
 	if (!tactical_feature_lifetimes_) tactical_feature_lifetimes_ = std::make_unique<grpc::FeatureLifetimeLedger>();
 	if (grpc::TacticalCountExceedsLimit(features.size(), grpc::kTacticalFeatureCapacity)) {
@@ -772,6 +802,8 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			basis.state_sequence(), features.size(), {});
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureOverflow,
 			grpc::TacticalSuppressionSource::None, features.size(), grpc::kTacticalFeatureCapacity});
+		TraceTacticalFeatureObservation(
+			feature_visibility_mode, features.size(), std::nullopt, 0, false);
 		utils::free_clear(features);
 		return;
 	}
@@ -791,6 +823,8 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			basis.state_sequence(), features.size(), feature_samples)) {
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureLedgerRejected,
 			grpc::TacticalSuppressionSource::None, features.size(), grpc::kTacticalFeatureCapacity});
+		TraceTacticalFeatureObservation(feature_visibility_mode, features.size(),
+			feature_samples.size(), 0, false);
 		utils::free_clear(features);
 		return;
 	}
@@ -801,6 +835,8 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		out->set_definition_id(sample.def_id); out->set_world_x(sample.x); out->set_elevation(sample.y); out->set_world_z(sample.z);
 		if (std::isfinite(feature_reclaim[i])) out->set_reclaim_left(feature_reclaim[i]);
 	}
+	TraceTacticalFeatureObservation(feature_visibility_mode, features.size(),
+		feature_samples.size(), static_cast<std::size_t>(snapshot.features_size()), true);
 	utils::free_clear(features);
 
 	for (const auto& [unit_id, actor] : circuit->GetTeamUnits()) {

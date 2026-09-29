@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace circuit::grpc {
@@ -102,6 +103,83 @@ private:
 	bool has_last_ = false;
 	TacticalSuppressionObservation last_{
 		TacticalSuppressionReason::SourceUnavailable};
+};
+
+enum class CallbackFeatureVisibilityMode : std::uint8_t {
+	NormalAllyTeamLos,
+	CheatsAllActive,
+	Unknown,
+};
+
+inline const char* CallbackFeatureVisibilityModeName(
+		CallbackFeatureVisibilityMode mode) {
+	switch (mode) {
+	case CallbackFeatureVisibilityMode::NormalAllyTeamLos: return "normal";
+	case CallbackFeatureVisibilityMode::CheatsAllActive: return "cheats";
+	case CallbackFeatureVisibilityMode::Unknown: return "unknown";
+	}
+	return "unknown";
+}
+
+inline const char* CallbackFeatureVisibilityPolicyName(
+		CallbackFeatureVisibilityMode mode) {
+	switch (mode) {
+	case CallbackFeatureVisibilityMode::NormalAllyTeamLos:
+		return "engine_feature_is_in_los_for_allyteam";
+	case CallbackFeatureVisibilityMode::CheatsAllActive:
+		return "engine_all_active_features";
+	case CallbackFeatureVisibilityMode::Unknown: return "unknown";
+	}
+	return "unknown";
+}
+
+template <typename Reader>
+std::optional<CallbackFeatureVisibilityMode> ReadCallbackFeatureVisibilityMode(
+		bool trace_enabled, Reader&& reader) {
+	if (!trace_enabled) return std::nullopt;
+	return reader();
+}
+
+struct TacticalFeatureObservation {
+	CallbackFeatureVisibilityMode mode = CallbackFeatureVisibilityMode::Unknown;
+	std::size_t raw = 0;
+	std::optional<std::size_t> valid;
+	std::size_t emitted = 0;
+	bool complete = false;
+	std::size_t limit = 0;
+
+	bool operator==(const TacticalFeatureObservation& other) const {
+		return mode == other.mode && raw == other.raw && valid == other.valid
+			&& emitted == other.emitted && complete == other.complete
+			&& limit == other.limit;
+	}
+};
+
+inline std::string TacticalFeatureObservationTraceMessage(
+		const TacticalFeatureObservation& observation) {
+	return std::string("tactical feature observation mode=")
+		+ CallbackFeatureVisibilityModeName(observation.mode)
+		+ " visibility_policy="
+		+ CallbackFeatureVisibilityPolicyName(observation.mode)
+		+ " raw=" + std::to_string(observation.raw)
+		+ " valid=" + (observation.valid.has_value()
+			? std::to_string(*observation.valid) : "unknown")
+		+ " emitted=" + std::to_string(observation.emitted)
+		+ " complete=" + (observation.complete ? "1" : "0")
+		+ " limit=" + std::to_string(observation.limit);
+}
+
+class TacticalFeatureObservationTraceState {
+public:
+	std::optional<std::string> MaybeMessage(
+			const TacticalFeatureObservation& observation) {
+		if (last_.has_value() && *last_ == observation) return std::nullopt;
+		last_ = observation;
+		return TacticalFeatureObservationTraceMessage(observation);
+	}
+
+private:
+	std::optional<TacticalFeatureObservation> last_;
 };
 
 }  // namespace circuit::grpc
