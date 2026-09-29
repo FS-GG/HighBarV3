@@ -1500,20 +1500,30 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 			if (entry.live) {
 				guarded = live_control_state_ ? live_control_state_->DispatchGuarded(entry, [&] {
 					auto* fresh_actor = circuit->GetTeamUnit(static_cast<ICoreUnit::Id>(entry.live_actor.id()));
-					if (fresh_actor == nullptr || fresh_actor->IsDead()) return false;
+					if (fresh_actor == nullptr || fresh_actor->IsDead()) {
+						AppendCoordinatorTrace("live dispatch refused reason=actor_missing_or_dead");
+						return false;
+					}
 					if (entry.live_semantic_action == ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE
 					    || entry.live_semantic_action == ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_APPEND) {
 						const auto& p = cmd.move_unit().to_position(); auto* map = circuit->GetMap();
 						if (map == nullptr || !std::isfinite(p.x()) || !std::isfinite(p.y()) || !std::isfinite(p.z())
 						    || p.x() < 0 || p.z() < 0 || p.x() > map->GetWidth()*8.0f-1.0f
-						    || p.z() > map->GetHeight()*8.0f-1.0f) return false;
+						    || p.z() > map->GetHeight()*8.0f-1.0f) {
+							AppendCoordinatorTrace(
+								"live dispatch refused reason=move_bounds x=" + std::to_string(p.x())
+								+ " y=" + std::to_string(p.y()) + " z=" + std::to_string(p.z()));
+							return false;
+						}
 					}
 					CEnemyInfo* fresh_target = nullptr;
 					if (entry.live_attack_target) {
 						fresh_target = circuit->GetEnemyInfo(static_cast<ICoreUnit::Id>(entry.live_attack_target->id()));
 						if (fresh_target == nullptr || fresh_target->IsHidden() || !fresh_target->IsInLOS()) return false;
 					}
-					return grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
+					const bool applied = grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
+					if (!applied) AppendCoordinatorTrace("live dispatch refused reason=engine_arm");
+					return applied;
 				}) : grpc::LiveFenceResult{};
 				dispatched = guarded.ok;
 			} else {
@@ -1535,6 +1545,8 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						CommandKind(cmd));
 				}
 			} else {
+				if (entry.live) AppendCoordinatorTrace(
+					"live dispatch skipped fence=" + ::highbar::v1::LiveFenceReason_Name(guarded.reason));
 				dispatch_event->set_status(
 					::highbar::v1::COMMAND_DISPATCH_SKIPPED_UNSUPPORTED_ARM);
 				auto* issue = dispatch_event->mutable_issue();
