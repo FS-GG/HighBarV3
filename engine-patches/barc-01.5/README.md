@@ -56,3 +56,9 @@ contains an absolute host path.
 
 The qualified artifact hashes and read-only `--version` result are recorded in
 `qualification.txt` after the build completes.
+
+For loader qualification, set `BARC_SDL2_RUNTIME` to a directory containing a
+real SDL2 `libSDL2-2.0.so.0`. The sysroot otherwise supplies the remaining
+libraries. The qualified run used the extracted Arch Linux SDL2 2.30.9 package
+recorded in `qualification.txt`; it did not alter the executable or install a
+package.

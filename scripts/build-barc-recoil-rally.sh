@@ -49,3 +49,8 @@ git -C "${source_dir}" submodule update --init --recursive
 ninja -C "${build_dir}" -j"${BARC_BUILD_JOBS:-2}" \
   spring-headless C-AIInterface Cpp-AIWrapper test_RallyQueueCallback
 "${build_dir}/test/test_RallyQueueCallback"
+
+if [[ -n ${BARC_SDL2_RUNTIME:-} ]]; then
+  LD_LIBRARY_PATH="${BARC_SDL2_RUNTIME}:${sysroot}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    "${build_dir}/spring-headless" --version
+fi

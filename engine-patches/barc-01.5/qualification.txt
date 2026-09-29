@@ -26,12 +26,18 @@ Recipe SHA-256:
   ed347949b87a317f170c863446a3434170208ec23d93fc6206f5380371926b4c  recoil-rally-api.patch
   bf7c2bd51d271ac9c91687b91d537ba87a2028d4fbe1d9f134c03031cd2442e6  submodules.txt
   69ee27d832962c74723e05d89e49f8e68602065ade662fa6879eca67a0f5a4c4  gcc16-rmlui.cmake
-  4b4d15bebb2a1bc10e1aa64a79a141d4f2938034baa153dc6b6db89534f63dea  scripts/build-barc-recoil-rally.sh
+  f0d9aa07a92c6775fdc50ec7f87303343c36fb708998e0343366ae9d0dc093b4  scripts/build-barc-recoil-rally.sh
 
-The read-only `spring-headless --version` invocation could not complete in this
-host environment. Without the sysroot library path the loader reports missing
-`libjasper.so.7`; with the sysroot path, SDL2 compatibility aborts while trying
-to load an unavailable SDL3 runtime. No package was installed and no game was
-launched. The generated version line above was emitted by the engine's
-`generateVersionFiles` build step and embeds both the implementation commit and
-the unique BARC suffix.
+Read-only loader qualification:
+  SDL2 package URL: https://archive.archlinux.org/packages/s/sdl2/sdl2-2.30.9-1-x86_64.pkg.tar.zst
+  SDL2 package SHA-256: d7ae299ea57d9712abfa4300ebc7cf5b0c9d5def84df738cd7c98faa4d6f0969
+  Extracted libSDL2-2.0.so.0 SHA-256: fe28e057440280c280b6615d8c74c86974237986c693391078f20acfcc490afa
+  LD_LIBRARY_PATH: extracted SDL2 usr/lib, then sysroot usr/lib
+  Resolved SDL2: extracted SDL2 2.30.9 library
+  Resolved DevIL/Jasper: sysroot libIL.so.1 and libjasper.so.7
+  Output: spring-headless version 2025.06.19-1-g7555c83 routine/barc-01.5-rally-api (BARC-01.5-rally-api-v1 Headless)
+
+The sysroot's SDL2 is sdl2-compat and requires an unavailable SDL3 runtime, so
+it was deliberately not selected for qualification. The SDL2 package was only
+downloaded and extracted under `/tmp`; no package was installed, no global
+library path changed, the executable hash stayed exact, and no game launched.
