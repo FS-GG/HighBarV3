@@ -66,7 +66,7 @@ TEST(AiMoveFlow, DrainNormalizesGameWideCommandsToSyntheticTarget) {
 	EXPECT_EQ(*dispatch_target, -1);
 }
 
-TEST(AiMoveFlow, DrainSurfacesMissingAuthoritativeTargetBeforeDispatch) {
+TEST(AiMoveFlow, DrainPreservesLegalUnitZeroTarget) {
 	CommandQueue queue(/*counters=*/nullptr, /*capacity=*/4);
 	ASSERT_TRUE(queue.TryPush(MakeMoveCommand(/*authoritative_target=*/0,
 	                                        /*embedded_command_unit=*/42)));
@@ -76,7 +76,8 @@ TEST(AiMoveFlow, DrainSurfacesMissingAuthoritativeTargetBeforeDispatch) {
 	const auto dispatch_target = EffectiveDispatchTargetUnitId(
 		drained[0].authoritative_target_unit_id,
 		drained[0].command);
-	EXPECT_FALSE(dispatch_target.has_value());
+	ASSERT_TRUE(dispatch_target.has_value());
+	EXPECT_EQ(*dispatch_target, 0);
 }
 
 }  // namespace

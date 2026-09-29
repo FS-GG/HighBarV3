@@ -163,6 +163,23 @@ TransportEndpoint LoadTransportConfig(CCircuitAI* ai) {
 			cfg.snapshot_tick.snapshot_max_units = v;
 		}
 	}
+	if (root.isMember("live_control")) {
+		const Json::Value& live = root["live_control"];
+		if (live.isMember("max_observation_age_ms")) {
+			const auto v = live["max_observation_age_ms"].asUInt();
+			if (v == 0u || v > 60000u) {
+				throw std::runtime_error("grpc.json: live_control.max_observation_age_ms must be in [1, 60000]");
+			}
+			cfg.live_control.max_observation_age_ms = v;
+		}
+		if (live.isMember("max_reported_units")) {
+			const auto v = live["max_reported_units"].asUInt();
+			if (v == 0u || v > 64u) {
+				throw std::runtime_error("grpc.json: live_control.max_reported_units must be in [1, 64]");
+			}
+			cfg.live_control.max_reported_units = v;
+		}
+	}
 	if (root.isMember("command_validation")) {
 		const Json::Value& cv = root["command_validation"];
 		if (cv.isMember("mode")) {

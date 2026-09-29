@@ -43,11 +43,91 @@ end
 
 local spawnedByAiTeam = {}
 local adminFixtureSeeded = false
+local barcLiveFixtureSeeded = false
+local barcLiveActor = nil
+local barcLiveTarget = nil
+local barcLiveTraceCount = 0
+local BARC_LIVE_TRACE_LIMIT = 256
 
 local function adminFixtureEnabled()
   local options = Spring.GetModOptions() or {}
   local value = options.highbar_admin_behavior_fixture
   return value == true or value == "1" or value == 1
+end
+
+local function barcLiveFixtureEnabled()
+  local options = Spring.GetModOptions() or {}
+  local value = options.highbar_barc_live_fixture
+  return value == true or value == "1" or value == 1
+end
+
+local function seedBarcLiveFixture()
+  if barcLiveFixtureSeeded or not barcLiveFixtureEnabled() then
+    return
+  end
+  barcLiveFixtureSeeded = true
+  local teams = {}
+  local gaiaTeam = Spring.GetGaiaTeamID()
+  for _, teamID in ipairs(Spring.GetTeamList()) do
+    if teamID ~= gaiaTeam then teams[#teams + 1] = teamID end
+  end
+  if #teams < 2 then return end
+  local x, z = 2048, 2048
+  local actor = Spring.CreateUnit("armflea", x, Spring.GetGroundHeight(x, z), z, "east", teams[1])
+  local targetX = x + 120
+  local target = Spring.CreateUnit("corak", targetX, Spring.GetGroundHeight(targetX, z), z, "west", teams[2])
+	barcLiveActor = actor
+	barcLiveTarget = target
+  for _, unitID in ipairs({actor, target}) do
+    if unitID then
+      Spring.GiveOrderToUnit(unitID, CMD.STOP, {}, {})
+      Spring.GiveOrderToUnit(unitID, CMD.FIRE_STATE, {0}, {})
+    end
+  end
+  Spring.Echo(string.format("highbar_barc_live_fixture actor=%s target=%s", tostring(actor), tostring(target)))
+end
+
+local function numberOrNil(value)
+  return value and string.format("%.3f", value) or "nil"
+end
+
+local function commandTrace(unitID)
+  if not unitID or not Spring.ValidUnitID(unitID) then return "invalid" end
+  local commands = Spring.GetUnitCommands(unitID, 8) or {}
+  local encoded = {}
+  for index, command in ipairs(commands) do
+    local params = {}
+    for paramIndex = 1, math.min(#(command.params or {}), 4) do
+      params[#params + 1] = numberOrNil(command.params[paramIndex])
+    end
+    local coded = command.options and command.options.coded or 0
+    encoded[#encoded + 1] = string.format("%d:%s:%s:%s",
+      index, tostring(command.id), tostring(coded), table.concat(params, ","))
+  end
+  return string.format("%d[%s]", Spring.GetUnitCommandCount(unitID) or #commands,
+    table.concat(encoded, ";"))
+end
+
+local function emitBarcLiveTrace(frame)
+  if not barcLiveFixtureSeeded or barcLiveTraceCount >= BARC_LIVE_TRACE_LIMIT then return end
+  if frame % 15 ~= 0 then return end
+  barcLiveTraceCount = barcLiveTraceCount + 1
+  if not barcLiveActor or not barcLiveTarget
+      or not Spring.ValidUnitID(barcLiveActor) or not Spring.ValidUnitID(barcLiveTarget) then
+    Spring.Echo(string.format(
+      "highbar_barc_live_trace frame=%d actor=%s target=%s status=fixture_invalid",
+      frame, tostring(barcLiveActor), tostring(barcLiveTarget)))
+    return
+  end
+  local ax, ay, az = Spring.GetUnitPosition(barcLiveActor)
+  local tx, ty, tz = Spring.GetUnitPosition(barcLiveTarget)
+  local ah = Spring.GetUnitHealth(barcLiveActor)
+  local th = Spring.GetUnitHealth(barcLiveTarget)
+  Spring.Echo(string.format(
+    "highbar_barc_live_trace frame=%d actor=%s actor_pos=%s,%s,%s actor_health=%s actor_commands=%s target=%s target_pos=%s,%s,%s target_health=%s target_commands=%s",
+    frame, tostring(barcLiveActor), numberOrNil(ax), numberOrNil(ay), numberOrNil(az),
+    numberOrNil(ah), commandTrace(barcLiveActor), tostring(barcLiveTarget),
+    numberOrNil(tx), numberOrNil(ty), numberOrNil(tz), numberOrNil(th), commandTrace(barcLiveTarget)))
 end
 
 local function teamStartPosition(teamID, fallbackIndex)
@@ -181,12 +261,17 @@ end
 
 function gadget:GameStart()
   seedAdminBehaviorFixture()
+  seedBarcLiveFixture()
 end
 
 function gadget:GameFrame(frame)
   if frame == 0 then
     seedAdminBehaviorFixture()
   end
+  if frame == 1 then
+    seedBarcLiveFixture()
+  end
+  emitBarcLiveTrace(frame)
 end
 
 function gadget:UnitDestroyed(unitID)

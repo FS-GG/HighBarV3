@@ -1,0 +1,242 @@
+// Additive opt-in live-control contract. The existing coordinator.proto and its
+// observation-only/ordinary command services remain byte-compatible.
+syntax = "proto3";
+
+package highbar.v1;
+
+import "highbar/commands.proto";
+
+service HighBarLiveControl {
+  // Priority authority path. This stream never carries gameplay batches.
+  rpc OpenLiveControlChannel(LiveControlSubscribe)
+      returns (stream LiveControlDirective);
+  rpc ReportLiveControlAck(LiveControlAckReport)
+      returns (LiveControlAckResponse);
+
+  // Independent bounded gameplay path. Admission continues to report through
+  // the existing correlated CommandBatchResult carrier.
+  rpc OpenLiveCommandChannel(LiveCommandSubscribe)
+      returns (stream LiveCommandBatch);
+
+  // Native-authored capability and snapshot metadata. This is the only source
+  // of live unit lifetimes and eligibility; browser/client echoes are never
+  // authoritative.
+  rpc ReportLiveState(LiveStateReport)
+      returns (LiveStateReportAck);
+}
+
+enum LiveControlProtocol {
+  LIVE_CONTROL_PROTOCOL_UNSPECIFIED = 0;
+  LIVE_CONTROL_PROTOCOL_V1 = 1;
+}
+
+enum LiveControlDirectiveKind {
+  LIVE_CONTROL_DIRECTIVE_KIND_UNSPECIFIED = 0;
+  LIVE_CONTROL_DIRECTIVE_KIND_ARM = 1;
+  LIVE_CONTROL_DIRECTIVE_KIND_RENEW = 2;
+  LIVE_CONTROL_DIRECTIVE_KIND_REVOKE = 3;
+}
+
+enum LiveControlAckDisposition {
+  LIVE_CONTROL_ACK_DISPOSITION_UNSPECIFIED = 0;
+  LIVE_CONTROL_ACK_RECORDED = 1;
+  LIVE_CONTROL_ACK_DUPLICATE = 2;
+  LIVE_CONTROL_ACK_STALE = 3;
+  LIVE_CONTROL_ACK_REFUSED = 4;
+}
+
+enum LiveSemanticAction {
+  LIVE_SEMANTIC_ACTION_UNSPECIFIED = 0;
+  LIVE_SEMANTIC_ACTION_STOP = 1;
+  LIVE_SEMANTIC_ACTION_MOVE_REPLACE = 2;
+  LIVE_SEMANTIC_ACTION_MOVE_APPEND = 3;
+  LIVE_SEMANTIC_ACTION_ATTACK_VISIBLE_UNIT = 4;
+}
+
+enum LiveFenceReason {
+  LIVE_FENCE_REASON_UNSPECIFIED = 0;
+  LIVE_FENCE_AUTHORITY_NOT_CONFIRMED = 1;
+  LIVE_FENCE_AUTHORITY_REVOKED = 2;
+  LIVE_FENCE_LEASE_EXPIRED = 3;
+  LIVE_FENCE_BASIS_UNKNOWN = 4;
+  LIVE_FENCE_BASIS_EXPIRED = 5;
+  LIVE_FENCE_ACTOR_NOT_OWNED = 6;
+  LIVE_FENCE_ACTOR_DEAD = 7;
+  LIVE_FENCE_ACTOR_LIFETIME_CHANGED = 8;
+  LIVE_FENCE_TARGET_NOT_VISUAL = 9;
+  LIVE_FENCE_TARGET_DEAD = 10;
+  LIVE_FENCE_TARGET_LIFETIME_CHANGED = 11;
+  LIVE_FENCE_CAPABILITY_CHANGED = 12;
+  LIVE_FENCE_COMMAND_EXPIRED = 13;
+}
+
+enum LiveStateReportDisposition {
+  LIVE_STATE_REPORT_DISPOSITION_UNSPECIFIED = 0;
+  LIVE_STATE_REPORT_RECORDED = 1;
+  LIVE_STATE_REPORT_DUPLICATE = 2;
+  LIVE_STATE_REPORT_STALE = 3;
+  LIVE_STATE_REPORT_REFUSED = 4;
+}
+
+enum NativeLiveUnitEligibility {
+  NATIVE_LIVE_UNIT_ELIGIBILITY_UNSPECIFIED = 0;
+  NATIVE_LIVE_UNIT_OWNED_ACTOR = 1;
+  NATIVE_LIVE_UNIT_VISUAL_TARGET = 2;
+}
+
+message LiveBinding {
+  string plugin_id = 1;
+  string process_incarnation = 2;
+  bytes match_incarnation = 3;
+  string command_channel_incarnation = 4;
+  string control_channel_incarnation = 5;
+  bytes broker_session_id = 6;
+  bytes controller_id = 7;
+  string controller_incarnation = 8;
+  uint64 authority_epoch = 9;
+  bytes module_sha256 = 10;
+  uint64 module_generation = 11;
+}
+
+message LiveControlSubscribe {
+  string plugin_id = 1;
+  string schema_version = 2;
+  LiveControlProtocol protocol = 3;
+  string process_incarnation = 4;
+  bytes match_incarnation = 5;
+  string command_channel_incarnation = 6;
+  string control_channel_incarnation = 7;
+}
+
+message LiveControlDirective {
+  LiveControlDirectiveKind kind = 1;
+  LiveBinding binding = 2;
+  uint64 control_sequence = 3;
+  // Native converts this duration at receipt into a steady-clock deadline.
+  uint32 lease_duration_ms = 4;
+  string reason = 5;
+}
+
+message LiveControlAckReport {
+  LiveBinding binding = 1;
+  uint64 control_sequence = 2;
+  LiveControlDirectiveKind kind = 3;
+  LiveControlAckDisposition disposition = 4;
+  string detail = 5;
+}
+
+message LiveControlAckResponse {
+  LiveControlAckDisposition disposition = 1;
+}
+
+// Acknowledgment means the native authority gate has linearized the directive.
+// Revoke prevents every later dispatch for the epoch, including queued work;
+// it does not undo an engine order that was already issued.
+message LiveCommandSubscribe {
+  string plugin_id = 1;
+  string schema_version = 2;
+  LiveControlProtocol protocol = 3;
+  LiveBinding binding = 4;
+}
+
+message NativeUnitReference {
+  // Unit id 0 is legal; this nested message must be present.
+  uint32 id = 1;
+  uint64 lifetime = 2;
+}
+
+message NativeObservationBasis {
+  bytes token = 1;
+  uint64 state_sequence = 2;
+  uint32 frame = 3;
+  bytes match_incarnation = 4;
+  string process_incarnation = 5;
+  string state_channel_incarnation = 6;
+  uint64 snapshot_send_monotonic_ns = 7;
+  uint32 effective_cadence_frames = 8;
+}
+
+message LiveStateReporter {
+  string plugin_id = 1;
+  string schema_version = 2;
+  LiveControlProtocol protocol = 3;
+  string process_incarnation = 4;
+  bytes match_incarnation = 5;
+  string state_channel_incarnation = 6;
+}
+
+message NativeLiveUnitMetadata {
+  NativeUnitReference reference = 1;
+  NativeLiveUnitEligibility eligibility = 2;
+}
+
+message LiveSnapshotMetadata {
+  NativeObservationBasis basis = 1;
+  int32 perspective_team_id = 2;
+  // Bounded by LiveNativeCapabilities.max_reported_units. Radar-only and
+  // otherwise hidden enemy identities must not appear.
+  repeated NativeLiveUnitMetadata units = 3;
+}
+
+message LiveStateReport {
+  LiveStateReporter reporter = 1;
+  uint64 report_sequence = 2;
+  oneof body {
+    LiveNativeCapabilities capabilities = 10;
+    LiveSnapshotMetadata snapshot = 11;
+  }
+}
+
+message LiveStateReportAck {
+  uint64 report_sequence = 1;
+  LiveStateReportDisposition disposition = 2;
+}
+
+message LiveCommandAttribution {
+  bytes parent_id = 1;
+  string originating_client_id = 2;
+  uint32 child_index = 3;
+  uint32 child_count = 4;
+  bytes input_id = 5;
+}
+
+message LiveCommandBatch {
+  // Live v1 requires exactly one command in batch.commands. It must match
+  // actor and semantic_action; extra legacy commands are refused rather than
+  // inheriting the single actor fence.
+  CommandBatch batch = 1;
+  LiveBinding binding = 2;
+  LiveCommandAttribution attribution = 3;
+  NativeObservationBasis basis = 4;
+  NativeUnitReference actor = 5;
+  optional NativeUnitReference visible_attack_target = 6;
+  LiveSemanticAction semantic_action = 7;
+
+  // Remaining durations are computed by the broker at send time and converted
+  // by native at receipt. Dispatch uses the earliest basis/command/lease
+  // deadline and checks revocation again while holding the dispatch gate.
+  uint32 remaining_basis_validity_ms = 8;
+  uint32 remaining_command_lifetime_ms = 9;
+  uint32 remaining_lease_validity_ms = 10;
+}
+
+// Producer-advertised values have no schema defaults. Live arm is refused when
+// any required bound is zero or the effective cadence exceeds the ceiling.
+message LiveNativeCapabilities {
+  uint32 max_actor_count = 1;
+  uint32 max_batch_commands = 2;
+  uint32 max_native_unit_id = 3;
+  uint32 snapshot_cadence_ceiling_frames = 4;
+  uint32 max_observation_age_ms = 5;
+  uint32 map_width_cells = 6;
+  uint32 map_height_cells = 7;
+  float min_world_x = 8;
+  float max_world_x_inclusive = 9;
+  float min_world_z = 10;
+  float max_world_z_inclusive = 11;
+  bool terrain_elevation_available = 12;
+  bool supports_stop = 13;
+  bool supports_move = 14;
+  bool supports_attack_visible_unit = 15;
+  uint32 max_reported_units = 16;
+}

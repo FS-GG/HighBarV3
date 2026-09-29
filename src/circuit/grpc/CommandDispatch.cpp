@@ -150,7 +150,8 @@ private:
 
 bool DispatchCommand(::circuit::CCircuitAI* ai,
                      ::circuit::CCircuitUnit* unit,
-                     const ::highbar::v1::AICommand& cmd) {
+                     const ::highbar::v1::AICommand& cmd,
+                     ::circuit::CEnemyInfo* selected_attack_target) {
 	if (ai == nullptr || unit == nullptr) return false;
 
 	using C = ::highbar::v1::AICommand;
@@ -257,6 +258,12 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
 	case C::kAttack: {
 		auto* u = unit->GetUnit();
 		if (u == nullptr) return false;
+		if (selected_attack_target != nullptr) {
+			auto* target = selected_attack_target->GetUnit();
+			if (target == nullptr) return false;
+			u->Attack(target, opts, timeout);
+			return true;
+		}
 		constexpr int CMD_ATTACK = 20;
 		u->ExecuteCustomCommand(CMD_ATTACK,
 			{static_cast<float>(cmd.attack().target_unit_id())},

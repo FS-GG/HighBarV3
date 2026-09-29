@@ -11,9 +11,12 @@
 #pragma once
 
 #include "highbar/commands.pb.h"
+#include "highbar/live_control.pb.h"
 
 #include <cstdint>
+#include <chrono>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <vector>
@@ -34,6 +37,16 @@ struct QueuedCommand {
 	std::uint32_t command_index = 0;
 	std::int32_t authoritative_target_unit_id = 0;
 	::highbar::v1::AICommand command;
+	bool live = false;
+	::highbar::v1::LiveBinding live_binding;
+	::highbar::v1::NativeObservationBasis live_basis;
+	::highbar::v1::NativeUnitReference live_actor;
+	std::optional<::highbar::v1::NativeUnitReference> live_attack_target;
+	::highbar::v1::LiveSemanticAction live_semantic_action =
+		::highbar::v1::LIVE_SEMANTIC_ACTION_UNSPECIFIED;
+	std::chrono::steady_clock::time_point live_basis_deadline{};
+	std::chrono::steady_clock::time_point live_command_deadline{};
+	std::chrono::steady_clock::time_point live_lease_deadline{};
 };
 
 enum class CommandBatchAdmissionStatus {
@@ -43,6 +56,7 @@ enum class CommandBatchAdmissionStatus {
 	kInvalidTarget,
 	kInvalidBatchSequence,
 	kInvalidCorrelation,
+	kDuplicate,
 	kQueueFull,
 };
 
@@ -107,5 +121,13 @@ CommandBatchResult AdmitCommandBatch(
 	const ::highbar::v1::CommandBatch& batch,
 	const std::string& session_id,
 	const std::string& channel_incarnation = {});
+
+class LiveControlState;
+CommandBatchResult AdmitLiveCommandBatch(
+	CommandQueue& queue,
+	const ::highbar::v1::LiveCommandBatch& live,
+	const std::string& session_id,
+	LiveControlState& state,
+	std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
 }  // namespace circuit::grpc

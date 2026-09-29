@@ -2,12 +2,14 @@
 
 #include "grpc/CoordinatorClient.h"
 #include "grpc/CommandQueue.h"
+#include "grpc/LiveControlState.h"
 #include "grpc/GrpcLog.h"
 #include "grpc/SchemaVersion.h"
 
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
 
+#include <algorithm>
 #include <chrono>
 #include <atomic>
 #include <cstdio>
@@ -74,10 +76,23 @@ const char* CommandBatchAdmissionStatusName(
 		return "invalid-batch-sequence";
 	case CommandBatchAdmissionStatus::kInvalidCorrelation:
 		return "invalid-correlation";
+	case CommandBatchAdmissionStatus::kDuplicate:
+		return "duplicate";
 	case CommandBatchAdmissionStatus::kQueueFull:
 		return "queue-full";
 	}
 	return "unknown";
+}
+
+const char* LiveStateDispositionName(::highbar::v1::LiveStateReportDisposition disposition) {
+	switch (disposition) {
+	case ::highbar::v1::LIVE_STATE_REPORT_RECORDED: return "recorded";
+	case ::highbar::v1::LIVE_STATE_REPORT_DUPLICATE: return "duplicate";
+	case ::highbar::v1::LIVE_STATE_REPORT_STALE: return "stale";
+	case ::highbar::v1::LIVE_STATE_REPORT_REFUSED: return "refused";
+	case ::highbar::v1::LIVE_STATE_REPORT_DISPOSITION_UNSPECIFIED: return "unspecified";
+	default: return "unknown";
+	}
 }
 
 std::string NewChannelIncarnation(const std::string& plugin_id) {
@@ -101,6 +116,8 @@ std::string NewChannelIncarnation(const std::string& plugin_id) {
 		return ::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ;
 	case CommandBatchAdmissionStatus::kInvalidCorrelation:
 		return ::highbar::v1::MISSING_CLIENT_COMMAND_ID;
+	case CommandBatchAdmissionStatus::kDuplicate:
+		return ::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ;
 	case CommandBatchAdmissionStatus::kQueueFull:
 		return ::highbar::v1::QUEUE_FULL;
 	case CommandBatchAdmissionStatus::kAccepted:
@@ -125,6 +142,8 @@ CoordinatorClient::CoordinatorClient(::circuit::CCircuitAI* ai,
 	, stub_(::highbar::v1::HighBarCoordinator::NewStub(channel_)) {
 	cmd_channel_ = ::grpc::CreateChannel(endpoint, ::grpc::InsecureChannelCredentials());
 	cmd_stub_ = ::highbar::v1::HighBarCoordinator::NewStub(cmd_channel_);
+	live_channel_ = ::grpc::CreateChannel(endpoint, ::grpc::InsecureChannelCredentials());
+	live_stub_ = ::highbar::v1::HighBarLiveControl::NewStub(live_channel_);
 	AppendCoordinatorTrace(plugin_id_, "ctor connected");
 	LogConnect(ai_, plugin_id_, endpoint_, "client-mode");
 	push_thread_ = std::thread(&CoordinatorClient::PushWorkerLoop, this);
@@ -132,6 +151,16 @@ CoordinatorClient::CoordinatorClient(::circuit::CCircuitAI* ai,
 
 CoordinatorClient::~CoordinatorClient() {
 	AppendCoordinatorTrace(plugin_id_, "dtor begin");
+	live_stopping_.store(true, std::memory_order_release);
+	live_report_cv_.notify_all();
+	{
+		std::lock_guard<std::mutex> lock(live_context_mutex_);
+		if (live_control_ctx_) live_control_ctx_->TryCancel();
+		if (live_command_ctx_) live_command_ctx_->TryCancel();
+	}
+	if (live_control_thread_.joinable()) live_control_thread_.join();
+	if (live_command_thread_.joinable()) live_command_thread_.join();
+	if (live_report_thread_.joinable()) live_report_thread_.join();
 	push_stopping_.store(true, std::memory_order_release);
 	push_queue_cv_.notify_all();
 	{
@@ -145,6 +174,178 @@ CoordinatorClient::~CoordinatorClient() {
 	if (cmd_ctx_) cmd_ctx_->TryCancel();
 	if (cmd_thread_.joinable()) cmd_thread_.join();
 	AppendCoordinatorTrace(plugin_id_, "dtor end");
+}
+
+void CoordinatorClient::StartLiveChannels(CommandQueue* sink, LiveControlState* state) {
+	if (sink == nullptr || state == nullptr || live_control_thread_.joinable()) return;
+	live_state_ = state;
+	state->ReplaceChannels(
+		NewChannelIncarnation(plugin_id_ + "-live-command"),
+		NewChannelIncarnation(plugin_id_ + "-live-control"));
+	live_control_thread_ = std::thread(&CoordinatorClient::LiveControlReaderLoop, this, state);
+	live_command_thread_ = std::thread(&CoordinatorClient::LiveCommandReaderLoop, this, sink, state);
+	live_report_thread_ = std::thread(&CoordinatorClient::LiveReportWorkerLoop, this);
+}
+
+bool CoordinatorClient::SendLiveControlAck(const ::highbar::v1::LiveControlAckReport& report) {
+	for (int attempt = 0; attempt < 2; ++attempt) {
+		::grpc::ClientContext ctx;
+		ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(250));
+		::highbar::v1::LiveControlAckResponse response;
+		const auto status = live_stub_->ReportLiveControlAck(&ctx, report, &response);
+		if (status.ok()) return true;
+		if (live_stopping_.load(std::memory_order_acquire)) return false;
+	}
+	return false;
+}
+
+void CoordinatorClient::LiveControlReaderLoop(LiveControlState* state) {
+	std::uint32_t backoff_ms = 200;
+	while (!live_stopping_.load(std::memory_order_acquire)) {
+		auto ctx = std::make_shared<::grpc::ClientContext>();
+		ctx->set_deadline(std::chrono::system_clock::now() + std::chrono::minutes(60));
+		{
+			std::lock_guard<std::mutex> lock(live_context_mutex_); live_control_ctx_ = ctx;
+		}
+		::highbar::v1::LiveControlSubscribe sub;
+		sub.set_plugin_id(plugin_id_); sub.set_schema_version(::highbar::v1::kSchemaVersion);
+		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+		sub.set_process_incarnation(state->ProcessIncarnation());
+		sub.set_match_incarnation(state->MatchIncarnation());
+		sub.set_command_channel_incarnation(state->CommandChannelIncarnation());
+		sub.set_control_channel_incarnation(state->ControlChannelIncarnation());
+		auto reader = live_stub_->OpenLiveControlChannel(ctx.get(), sub);
+		if (reader) {
+			backoff_ms = 200; ::highbar::v1::LiveControlDirective directive;
+			while (reader->Read(&directive)) {
+				const auto ack = state->ApplyDirective(directive);
+				(void)SendLiveControlAck(ack);
+			}
+			(void)reader->Finish();
+		}
+		{
+			std::lock_guard<std::mutex> lock(live_context_mutex_); live_control_ctx_.reset();
+		}
+		if (!live_stopping_.load(std::memory_order_acquire)) {
+			// Losing the priority stream immediately invalidates its authority
+			// generation. Rotate both paired incarnations before backoff and
+			// cancel the gameplay stream so no old-binding work can arrive or
+			// dispatch while the replacement control stream is pending.
+			state->ReplaceChannels(
+				NewChannelIncarnation(plugin_id_ + "-live-command"),
+				NewChannelIncarnation(plugin_id_ + "-live-control"));
+			std::lock_guard<std::mutex> lock(live_context_mutex_);
+			if (live_command_ctx_) live_command_ctx_->TryCancel();
+		}
+		for (std::uint32_t elapsed=0; elapsed<backoff_ms && !live_stopping_.load(); elapsed+=50)
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		backoff_ms = std::min<std::uint32_t>(backoff_ms*2, 5000);
+	}
+}
+
+void CoordinatorClient::LiveCommandReaderLoop(CommandQueue* sink, LiveControlState* state) {
+	std::uint32_t backoff_ms = 200;
+	while (!live_stopping_.load(std::memory_order_acquire)) {
+		auto ctx = std::make_shared<::grpc::ClientContext>();
+		ctx->set_deadline(std::chrono::system_clock::now() + std::chrono::minutes(60));
+		{
+			std::lock_guard<std::mutex> lock(live_context_mutex_); live_command_ctx_ = ctx;
+		}
+		::highbar::v1::LiveCommandSubscribe sub;
+		sub.set_plugin_id(plugin_id_); sub.set_schema_version(::highbar::v1::kSchemaVersion);
+		sub.set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+		sub.mutable_binding()->set_plugin_id(plugin_id_);
+		sub.mutable_binding()->set_process_incarnation(state->ProcessIncarnation());
+		sub.mutable_binding()->set_match_incarnation(state->MatchIncarnation());
+		sub.mutable_binding()->set_command_channel_incarnation(state->CommandChannelIncarnation());
+		sub.mutable_binding()->set_control_channel_incarnation(state->ControlChannelIncarnation());
+		auto reader = live_stub_->OpenLiveCommandChannel(ctx.get(), sub);
+		if (reader) {
+			backoff_ms = 200; ::highbar::v1::LiveCommandBatch live;
+			while (reader->Read(&live)) {
+				const auto admission = AdmitLiveCommandBatch(*sink, live, plugin_id_ + "-live", *state);
+				(void)ReportCommandBatchResult(live.binding().command_channel_incarnation(), live.batch(), admission);
+			}
+			(void)reader->Finish();
+		}
+		{
+			std::lock_guard<std::mutex> lock(live_context_mutex_); live_command_ctx_.reset();
+		}
+		for (std::uint32_t elapsed=0; elapsed<backoff_ms && !live_stopping_.load(); elapsed+=50)
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		backoff_ms = std::min<std::uint32_t>(backoff_ms*2, 5000);
+	}
+}
+
+void CoordinatorClient::QueueLiveStateReport(::highbar::v1::LiveStateReport report) {
+	if (!live_state_ || live_stopping_.load(std::memory_order_acquire)) return;
+	auto* reporter = report.mutable_reporter();
+	reporter->set_plugin_id(plugin_id_); reporter->set_schema_version(::highbar::v1::kSchemaVersion);
+	reporter->set_protocol(::highbar::v1::LIVE_CONTROL_PROTOCOL_V1);
+	reporter->set_process_incarnation(live_state_->ProcessIncarnation());
+	reporter->set_match_incarnation(live_state_->MatchIncarnation());
+	reporter->set_state_channel_incarnation(live_state_->StateChannelIncarnation());
+	report.set_report_sequence(live_report_sequence_.fetch_add(1) + 1);
+	{
+		std::lock_guard<std::mutex> lock(live_report_mutex_);
+		if (live_reports_.size() >= kMaxQueuedLiveReports) {
+			// Keep the capability advertisement under snapshot backpressure:
+			// live arm is impossible until the broker has recorded it. Snapshot
+			// reports are periodic, so evicting the oldest snapshot retains the
+			// newest bounded view without blocking the engine thread.
+			auto victim = std::find_if(live_reports_.begin(), live_reports_.end(),
+				[](const auto& queued) {
+					return queued.body_case() == ::highbar::v1::LiveStateReport::kSnapshot;
+				});
+			if (victim == live_reports_.end()) {
+				if (report.body_case() == ::highbar::v1::LiveStateReport::kSnapshot) return;
+				live_reports_.pop_front();
+			} else {
+				live_reports_.erase(victim);
+			}
+		}
+		live_reports_.push_back(std::move(report));
+	}
+	live_report_cv_.notify_one();
+}
+
+void CoordinatorClient::ReportLiveCapabilities(const ::highbar::v1::LiveNativeCapabilities& c) {
+	::highbar::v1::LiveStateReport report; *report.mutable_capabilities() = c; QueueLiveStateReport(std::move(report));
+}
+void CoordinatorClient::ReportLiveSnapshot(const ::highbar::v1::LiveSnapshotMetadata& s) {
+	::highbar::v1::LiveStateReport report; *report.mutable_snapshot() = s; QueueLiveStateReport(std::move(report));
+}
+
+void CoordinatorClient::LiveReportWorkerLoop() {
+	while (!live_stopping_.load(std::memory_order_acquire)) {
+		::highbar::v1::LiveStateReport report;
+		{
+			std::unique_lock<std::mutex> lock(live_report_mutex_);
+			live_report_cv_.wait(lock, [&]{ return live_stopping_.load() || !live_reports_.empty(); });
+			if (live_stopping_.load()) break;
+			report = std::move(live_reports_.front()); live_reports_.pop_front();
+		}
+		std::uint32_t backoff_ms = 100;
+		while (!live_stopping_.load(std::memory_order_acquire)) {
+			::grpc::ClientContext ctx; ctx.set_deadline(std::chrono::system_clock::now()+std::chrono::milliseconds(750));
+			::highbar::v1::LiveStateReportAck ack;
+			const auto status = live_stub_->ReportLiveState(&ctx, report, &ack);
+			if (status.ok()) {
+				AppendCoordinatorTrace(plugin_id_,
+					"live state ack seq=" + std::to_string(ack.report_sequence())
+					+ " disposition=" + LiveStateDispositionName(ack.disposition())
+					+ " body=" + std::to_string(static_cast<int>(report.body_case())));
+				break;
+			}
+			AppendCoordinatorTrace(plugin_id_,
+				"live state rpc failed seq=" + std::to_string(report.report_sequence())
+				+ " code=" + std::to_string(status.error_code())
+				+ " msg=" + status.error_message());
+			for (std::uint32_t elapsed=0; elapsed<backoff_ms && !live_stopping_.load(); elapsed+=50)
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			backoff_ms=std::min<std::uint32_t>(backoff_ms*2,5000);
+		}
+	}
 }
 
 bool CoordinatorClient::SendHeartbeat(std::uint32_t frame) {
@@ -459,9 +660,11 @@ void CoordinatorClient::PushWorkerLoop() {
 		// moment the push worker hands the frame to gRPC.
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
-		update.set_send_monotonic_ns(
-			static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ULL
-			+ static_cast<std::uint64_t>(ts.tv_nsec));
+		if (update.send_monotonic_ns() == 0) {
+			update.set_send_monotonic_ns(
+				static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ULL
+				+ static_cast<std::uint64_t>(ts.tv_nsec));
+		}
 
 		// gRPC ClientWriter::Write can block under backpressure, so this
 		// path intentionally runs off the Spring engine thread.

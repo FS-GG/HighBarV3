@@ -260,9 +260,14 @@ MouseRelativeModeWarp = $relative_mode_warp
 EOF
 
     LAUNCH_ARGS+=(--write-dir "$WRITEDIR" --config "$CONFIG_PATH")
-    if [[ "$WINDOW_MODE" != "fullscreen" ]]; then
-        LAUNCH_ARGS+=(--window)
-    fi
+	if [[ "$WINDOW_MODE" != "fullscreen" ]]; then
+		LAUNCH_ARGS+=(--window)
+	fi
+else
+	# spring-headless supports the same explicit write-dir switch. Supplying it
+	# is required for plugin lookup and engine writes to remain inside the
+	# caller-owned isolated runtime.
+	LAUNCH_ARGS+=(--write-dir "$WRITEDIR")
 fi
 
 "$ENGINE" "${LAUNCH_ARGS[@]}" "$START_SCRIPT" > "$LOG" 2>&1 &

@@ -1268,6 +1268,9 @@ int CCircuitAI::EnemyEnterLOS(CEnemyInfo* enemy)
 	bool isSuddenThreat = mapManager->IsSuddenThreat(enemy->GetData());
 
 	allyTeam->EnemyEnterLOS(enemy->GetData(), this);
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyEnterLOS(enemy);
+	}
 
 	if (!isSuddenThreat) {
 		return 0;  // signaling: OK
@@ -1279,7 +1282,12 @@ int CCircuitAI::EnemyEnterLOS(CEnemyInfo* enemy)
 	}
 	for (int fId : friendlies) {
 		CCircuitUnit* unit = GetTeamUnit(fId);
-		if ((unit != nullptr) && (unit->GetTask()->GetType() != IUnitTask::Type::NIL)) {
+		// External-control mode permanently omits the built-in decision modules,
+		// so newly registered units can legitimately have no manager task.  An
+		// enemy becoming visible during fixture startup must not dereference that
+		// absent task before live control assigns an engine order.
+		if ((unit != nullptr) && (unit->GetTask() != nullptr)
+			&& (unit->GetTask()->GetType() != IUnitTask::Type::NIL)) {
 			unit->ForceUpdate(lastFrame + THREAT_UPDATE_RATE);
 		}
 	}
@@ -1292,6 +1300,9 @@ int CCircuitAI::EnemyEnterLOS(CEnemyInfo* enemy)
 int CCircuitAI::EnemyLeaveLOS(CEnemyInfo* enemy)
 {
 	allyTeam->EnemyLeaveLOS(enemy->GetData(), this);
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyLeaveLOS(enemy);
+	}
 
 	return 0;  // signaling: OK
 }
@@ -1299,6 +1310,9 @@ int CCircuitAI::EnemyLeaveLOS(CEnemyInfo* enemy)
 int CCircuitAI::EnemyEnterRadar(CEnemyInfo* enemy)
 {
 	allyTeam->EnemyEnterRadar(enemy->GetData(), this);
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyEnterRadar(enemy);
+	}
 
 	return 0;  // signaling: OK
 }
@@ -1306,18 +1320,27 @@ int CCircuitAI::EnemyEnterRadar(CEnemyInfo* enemy)
 int CCircuitAI::EnemyLeaveRadar(CEnemyInfo* enemy)
 {
 	allyTeam->EnemyLeaveRadar(enemy->GetData(), this);
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyLeaveRadar(enemy);
+	}
 
 	return 0;  // signaling: OK
 }
 
 int CCircuitAI::EnemyDamaged(CEnemyInfo* enemy)
 {
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyDamaged(enemy);
+	}
 	// NOTE: Whole threat map updates in a fraction of a second, through polling
 	return 0;  // signaling: OK
 }
 
 int CCircuitAI::EnemyDestroyed(CEnemyInfo* enemy)
 {
+	if (grpcGateway != nullptr) {
+		grpcGateway->OnEnemyDestroyed(enemy);
+	}
 	allyTeam->EnemyDestroyed(enemy->GetData(), this);
 
 	militaryManager->DelPointOfInterest(enemy);

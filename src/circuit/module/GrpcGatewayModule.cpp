@@ -18,6 +18,7 @@
 #include "grpc/GrpcLog.h"
 #include "grpc/RingBuffer.h"
 #include "grpc/OrderStateTracker.h"
+#include "grpc/LiveControlState.h"
 #include "grpc/SchemaVersion.h"
 #include "grpc/SnapshotBuilder.h"
 #include "SpringHeadlessPin.h"  // T006 — kEngineReleaseId / kEngineSha256
@@ -28,6 +29,7 @@
 #include "unit/CircuitUnit.h"
 #include "unit/CircuitDef.h"
 #include "unit/enemy/EnemyInfo.h"
+#include "spring/SpringMap.h"
 #include "util/FileSystem.h"
 
 #include "AIFloat3.h"
@@ -39,6 +41,7 @@
 #include <Unit.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -265,6 +268,8 @@ CGrpcGatewayModule::CGrpcGatewayModule(CCircuitAI* ai)
 		// pumped from OnFrameTick once the gateway is Healthy.
 		snapshot_tick_.Configure({endpoint.snapshot_tick.snapshot_cadence_frames,
 		                           endpoint.snapshot_tick.snapshot_max_units});
+		live_max_observation_age_ms_ = endpoint.live_control.max_observation_age_ms;
+		live_max_reported_units_ = endpoint.live_control.max_reported_units;
 		if (endpoint.transport == grpc::Transport::kUds) {
 			socket_path_ = grpc::ResolveUdsPath(endpoint, ai);
 		}
@@ -429,10 +434,53 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	coordinator_client_ = std::make_unique<grpc::CoordinatorClient>(
 		circuit, coordinator_endpoint_, coordinator_plugin_id_,
 		coordinator_engine_sha256_);
+	const auto identity_seed = coordinator_plugin_id_ + "-" + std::to_string(NowMicros());
+	live_control_state_ = std::make_unique<grpc::LiveControlState>(
+		coordinator_plugin_id_, identity_seed + "-process", grpc::LiveControlState::NewMatchIncarnation(),
+		identity_seed + "-state", identity_seed + "-command", identity_seed + "-control",
+		live_max_reported_units_);
+	for (const auto& [id, unit] : circuit->GetTeamUnits()) {
+		if (unit != nullptr && !unit->IsDead()) live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(id));
+	}
+	if (auto* enemies = circuit->GetEnemyManager()) {
+		for (const auto& [id, enemy] : enemies->GetEnemyUnits()) {
+			if (enemy != nullptr) live_control_state_->MarkEnemyPresent(static_cast<std::uint32_t>(id), enemy->IsInLOS());
+		}
+	}
 	if (!coordinator_command_channel_started_) {
 		coordinator_client_->StartCommandChannel(command_queue_.get());
 		coordinator_command_channel_started_ = true;
 	}
+	coordinator_client_->StartLiveChannels(command_queue_.get(), live_control_state_.get());
+	::highbar::v1::LiveNativeCapabilities capabilities;
+	capabilities.set_max_actor_count(64); capabilities.set_max_batch_commands(1);
+	capabilities.set_max_native_unit_id(31999);
+	capabilities.set_snapshot_cadence_ceiling_frames(snapshot_tick_.SnapshotCadenceFrames());
+	capabilities.set_max_observation_age_ms(live_max_observation_age_ms_);
+	if (auto* map = circuit->GetMap()) {
+		capabilities.set_map_width_cells(static_cast<std::uint32_t>(map->GetWidth()));
+		capabilities.set_map_height_cells(static_cast<std::uint32_t>(map->GetHeight()));
+		capabilities.set_min_world_x(0); capabilities.set_min_world_z(0);
+		capabilities.set_max_world_x_inclusive(map->GetWidth() * 8.0f - 1.0f);
+		capabilities.set_max_world_z_inclusive(map->GetHeight() * 8.0f - 1.0f);
+	}
+	capabilities.set_terrain_elevation_available(false);
+	capabilities.set_supports_stop(true); capabilities.set_supports_move(true);
+	capabilities.set_supports_attack_visible_unit(true); capabilities.set_max_reported_units(live_max_reported_units_);
+	AppendCoordinatorTrace(
+		"live capabilities report match_bytes=" + std::to_string(live_control_state_->MatchIncarnation().size())
+		+ " actors=" + std::to_string(capabilities.max_actor_count())
+		+ " batch=" + std::to_string(capabilities.max_batch_commands())
+		+ " max_unit=" + std::to_string(capabilities.max_native_unit_id())
+		+ " cadence=" + std::to_string(capabilities.snapshot_cadence_ceiling_frames())
+		+ " max_age_ms=" + std::to_string(capabilities.max_observation_age_ms())
+		+ " max_reported=" + std::to_string(capabilities.max_reported_units())
+		+ " map_cells=" + std::to_string(capabilities.map_width_cells()) + "x"
+		+ std::to_string(capabilities.map_height_cells())
+		+ " stop=" + std::to_string(capabilities.supports_stop())
+		+ " move=" + std::to_string(capabilities.supports_move())
+		+ " attack=" + std::to_string(capabilities.supports_attack_visible_unit()));
+	coordinator_client_->ReportLiveCapabilities(capabilities);
 }
 
 void CGrpcGatewayModule::MaybeEmitInitialCoordinatorSnapshot(const char* reason) {
@@ -561,6 +609,7 @@ void SetVec3(::highbar::v1::Vector3* dst, const springai::AIFloat3& src) {
 int CGrpcGatewayModule::UnitCreated(CCircuitUnit* unit, CCircuitUnit* builder) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (live_control_state_) live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(unit->GetId()));
 		auto* ev = current_frame_delta_.add_events()->mutable_unit_created();
 		ev->set_unit_id(static_cast<std::int32_t>(unit->GetId()));
 		ev->set_builder_id(
@@ -573,6 +622,7 @@ int CGrpcGatewayModule::UnitCreated(CCircuitUnit* unit, CCircuitUnit* builder) {
 int CGrpcGatewayModule::UnitFinished(CCircuitUnit* unit) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (live_control_state_) live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(unit->GetId()));
 		auto* ev = current_frame_delta_.add_events()->mutable_unit_finished();
 		ev->set_unit_id(static_cast<std::int32_t>(unit->GetId()));
 		MaybeEmitInitialCoordinatorSnapshot("unit_finished");
@@ -625,6 +675,8 @@ void CGrpcGatewayModule::OnUnitDamagedFull(CCircuitUnit* unit,
 int CGrpcGatewayModule::UnitDestroyed(CCircuitUnit* unit, CEnemyInfo* attacker) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (live_control_state_)
+			live_control_state_->MarkOwnedRemoved(static_cast<std::uint32_t>(unit->GetId()));
 		order_state_tracker_->MarkUnitRemoved(
 			static_cast<std::uint32_t>(unit->GetId()), CurrentFrame());
 		auto* ev = current_frame_delta_.add_events()->mutable_unit_destroyed();
@@ -639,6 +691,11 @@ int CGrpcGatewayModule::UnitDestroyed(CCircuitUnit* unit, CEnemyInfo* attacker) 
 int CGrpcGatewayModule::UnitGiven(CCircuitUnit* unit, int oldTeam, int newTeam) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (live_control_state_) {
+			live_control_state_->MarkOwnedRemoved(static_cast<std::uint32_t>(unit->GetId()));
+			if (newTeam == circuit->GetTeamId())
+				live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(unit->GetId()));
+		}
 		order_state_tracker_->MarkUnitRemoved(
 			static_cast<std::uint32_t>(unit->GetId()), CurrentFrame());
 		auto* ev = current_frame_delta_.add_events()->mutable_unit_given();
@@ -652,6 +709,11 @@ int CGrpcGatewayModule::UnitGiven(CCircuitUnit* unit, int oldTeam, int newTeam) 
 int CGrpcGatewayModule::UnitCaptured(CCircuitUnit* unit, int oldTeam, int newTeam) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (live_control_state_) {
+			live_control_state_->MarkOwnedRemoved(static_cast<std::uint32_t>(unit->GetId()));
+			if (newTeam == circuit->GetTeamId())
+				live_control_state_->MarkOwnedPresent(static_cast<std::uint32_t>(unit->GetId()));
+		}
 		order_state_tracker_->MarkUnitRemoved(
 			static_cast<std::uint32_t>(unit->GetId()), CurrentFrame());
 		auto* ev = current_frame_delta_.add_events()->mutable_unit_captured();
@@ -673,6 +735,7 @@ void CGrpcGatewayModule::OnUnitMoveFailed(CCircuitUnit* unit) {
 void CGrpcGatewayModule::OnEnemyEnterLOS(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
+		if (live_control_state_) live_control_state_->MarkEnemyPresent(static_cast<std::uint32_t>(enemy->GetId()), true);
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_enter_los();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
 	});
@@ -681,6 +744,7 @@ void CGrpcGatewayModule::OnEnemyEnterLOS(CEnemyInfo* enemy) {
 void CGrpcGatewayModule::OnEnemyLeaveLOS(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
+		if (live_control_state_) live_control_state_->MarkEnemyVisual(static_cast<std::uint32_t>(enemy->GetId()), false);
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_leave_los();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
 	});
@@ -705,16 +769,27 @@ void CGrpcGatewayModule::OnEnemyLeaveRadar(CEnemyInfo* enemy) {
 void CGrpcGatewayModule::OnEnemyDamaged(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
+		// This gateway hook does not carry a damage amount. Refresh the authoritative
+		// visible-unit cache from Spring instead of publishing damage=0 as a
+		// guessed health decrement, then replace the sparse event with a full
+		// snapshot at the end of this frame.
+		if (enemy->IsInLOS() && enemy->GetUnit() != nullptr
+		    && enemy->GetCircuitDef() != nullptr) {
+			enemy->GetData()->UpdateInLosData();
+		}
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_damaged();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
+		state_update_order_.RequestFullStateReplacement();
 	});
 }
 
 void CGrpcGatewayModule::OnEnemyDestroyed(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
+		if (live_control_state_) live_control_state_->MarkEnemyRemoved(static_cast<std::uint32_t>(enemy->GetId()));
 		auto* ev = current_frame_delta_.add_events()->mutable_enemy_destroyed();
 		ev->set_enemy_id(static_cast<std::int32_t>(enemy->GetId()));
+		state_update_order_.RequestFullStateReplacement();
 	});
 }
 
@@ -809,32 +884,43 @@ void CGrpcGatewayModule::OnFrameTick() {
 			current_frame_.store(frame, std::memory_order_release);
 			const std::size_t own_units_count = circuit != nullptr
 				? circuit->GetTeamUnits().size() : 0;
+			if (state_update_order_.ReplacementPending()) {
+				// Reuse SnapshotTick's forced-emission path so replacement
+				// snapshots retain cadence metadata and coalesce in one frame.
+				snapshot_tick_.PendingRequest().store(true, std::memory_order_release);
+			}
 			const auto pump = snapshot_tick_.Pump(frame, own_units_count);
-			if (pump.emit) {
+
+			// Emit an EconomyTick every 30 frames (1s at 30Hz). Keeps the
+			// observers' economy plot moving without flooding the delta stream.
+			static constexpr std::uint32_t kEconomyEveryNFrames = 30;
+			const auto frames = counters_ != nullptr
+				? counters_->frames_since_bind.load() : 0u;
+			if (frames > 0 && frames % kEconomyEveryNFrames == 0) {
+				OnEconomyTick();
+			}
+
+			const auto update_plan = state_update_order_.Plan(
+				pump.emit, current_frame_delta_.events_size() > 0);
+			if (update_plan.snapshot_before_delta) {
 				BroadcastSnapshot(pump.effective_cadence_frames);
 			}
-		}
 
-		// Emit an EconomyTick every 30 frames (1s at 30Hz). Keeps the
-		// observers' economy plot moving without flooding the delta stream.
-		static constexpr std::uint32_t kEconomyEveryNFrames = 30;
-		const auto frames = counters_ != nullptr
-			? counters_->frames_since_bind.load() : 0u;
-		if (frames > 0 && frames % kEconomyEveryNFrames == 0) {
-			OnEconomyTick();
-		}
-
-		// T038: flush accumulated delta. Take the exclusive lock only for
-		// the serialize-and-publish step; the append path above is
-		// engine-thread-owned and holds nothing.
-		if (current_frame_delta_.events_size() > 0) {
-			FlushDelta();
-			frames_since_last_flush_ = 0;
-		} else {
-			++frames_since_last_flush_;
-			if (frames_since_last_flush_ >= kKeepAliveFrames) {
-				EmitKeepAlive();
+			// T038: flush accumulated delta. For damage/destroy replacement,
+			// legacy and dispatch events receive the lower sequence and the
+			// complete snapshot is the final update from this frame.
+			if (update_plan.flush_delta) {
+				FlushDelta(update_plan.snapshot_after_delta);
 				frames_since_last_flush_ = 0;
+			} else {
+				++frames_since_last_flush_;
+				if (frames_since_last_flush_ >= kKeepAliveFrames) {
+					EmitKeepAlive();
+					frames_since_last_flush_ = 0;
+				}
+			}
+			if (update_plan.snapshot_after_delta) {
+				BroadcastSnapshot(pump.effective_cadence_frames);
 			}
 		}
 	} catch (...) {
@@ -844,7 +930,7 @@ void CGrpcGatewayModule::OnFrameTick() {
 	}
 }
 
-void CGrpcGatewayModule::FlushDelta() {
+void CGrpcGatewayModule::FlushDelta(bool project_complete_world_state) {
 	// T014 — guard the serializer hot path. OOM or protobuf failure here
 	// transitions to Disabled with subsystem=serialization.
 	try {
@@ -868,14 +954,19 @@ void CGrpcGatewayModule::FlushDelta() {
 		}
 		delta_bus_->Publish(frozen);
 
-		// Phase B — client-mode push. The coordinator receives the
-		// same StateUpdate that the in-process ring stores, so any
-		// external observer attached to the coordinator sees a feed
-		// equivalent to what server-mode StreamState would have
-		// produced. Serialization is already done; we pass the object
-		// itself (gRPC does its own copy for wire-level framing).
+		// Client-mode consumers require complete world facts at damage and
+		// destroy boundaries. Preserve the exact legacy delta in ring/DeltaBus,
+		// but remove only those two sparse arms from the coordinator projection;
+		// the complete replacement snapshot follows at seq+1.
 		if (coordinator_client_) {
-			coordinator_client_->PushStateUpdate(update);
+			if (project_complete_world_state) {
+				::highbar::v1::StateUpdate projection;
+				if (grpc::BuildCoordinatorDeltaProjection(update, &projection)) {
+					coordinator_client_->PushStateUpdate(projection);
+				}
+			} else {
+				coordinator_client_->PushStateUpdate(update);
+			}
 		}
 
 		if (counters_ != nullptr) {
@@ -910,9 +1001,7 @@ void CGrpcGatewayModule::EmitKeepAlive() {
 		// Phase B — also push keepalives to the coordinator so an
 		// idle observer-side client can distinguish "connected but no
 		// state events" from "connection hung".
-		if (coordinator_client_) {
-			coordinator_client_->PushStateUpdate(update);
-		}
+		if (coordinator_client_) coordinator_client_->PushStateUpdate(update);
 	} catch (...) {
 		TransitionToDisabled("serialization",
 			grpc::ReasonCodeFor(std::current_exception()),
@@ -947,6 +1036,7 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 
 		// Constitution V: stamp CLOCK_MONOTONIC_ns at the moment we hand
 		// the frame to the fan-out. Same pattern as CoordinatorClient.
+		const auto snapshot_emitted_at = grpc::LiveControlState::Clock::now();
 		{
 			struct timespec ts;
 			clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -968,7 +1058,19 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 		delta_bus_->Publish(frozen);
 
 		if (coordinator_client_) {
-			coordinator_client_->PushStateUpdate(update);
+			const bool enqueued = coordinator_client_->PushStateUpdate(update);
+			if (enqueued && live_control_state_) {
+				auto units = live_control_state_->SnapshotUnitMetadata();
+				if (units) {
+					::highbar::v1::LiveSnapshotMetadata metadata;
+					*metadata.mutable_basis() = live_control_state_->RecordBasis(
+						update.seq(), update.frame(), update.send_monotonic_ns(), effective_cadence_frames,
+						std::chrono::milliseconds(live_max_observation_age_ms_), snapshot_emitted_at);
+					metadata.set_perspective_team_id(circuit->GetTeamId());
+					for (auto& unit : *units) *metadata.add_units() = std::move(unit);
+					coordinator_client_->ReportLiveSnapshot(metadata);
+				}
+			}
 		}
 
 		if (counters_ != nullptr) {
@@ -1326,6 +1428,17 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 			static_cast<std::uint32_t>(entry.authoritative_target_unit_id));
 		dispatch_event->set_frame(CurrentFrame());
 		dispatch_event->set_channel_incarnation(entry.channel_incarnation);
+		if (!entry.live && live_control_state_
+		    && !live_control_state_->LegacyGameplayAllowed()) {
+			dispatch_event->set_status(
+				::highbar::v1::COMMAND_DISPATCH_SKIPPED_CAPABILITY_CHANGED);
+			auto* issue = dispatch_event->mutable_issue();
+			issue->set_code(::highbar::v1::STALE_OR_DUPLICATE_BATCH_SEQ);
+			issue->set_field_path("live_authority");
+			issue->set_detail("legacy gameplay fenced by live authority session");
+			issue->set_retry_hint(::highbar::v1::RETRY_NEVER);
+			continue;
+		}
 		const auto target_id = grpc::EffectiveDispatchTargetUnitId(
 			entry.authoritative_target_unit_id, cmd);
 		if (!target_id.has_value()) {
@@ -1344,7 +1457,8 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 		// dispatch context; the dispatcher case body ignores `unit` for
 		// these arms but DispatchCommand's guards still want non-null.
 		CCircuitUnit* unit_ctx = nullptr;
-		if (*target_id > 0) {
+		CEnemyInfo* selected_attack_target = nullptr;
+		if (*target_id >= 0) {
 			unit_ctx = circuit->GetTeamUnit(*target_id);
 			if (unit_ctx == nullptr) {
 				dispatch_event->set_status(
@@ -1380,6 +1494,28 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 				continue;
 			}
 		}
+		if (entry.live && entry.live_semantic_action ==
+				::highbar::v1::LIVE_SEMANTIC_ACTION_ATTACK_VISIBLE_UNIT) {
+			if (!entry.live_attack_target.has_value()) {
+				dispatch_event->set_status(::highbar::v1::COMMAND_DISPATCH_SKIPPED_TARGET_MISSING); continue;
+			}
+			const auto& target_ref = *entry.live_attack_target;
+			selected_attack_target = circuit->GetEnemyInfo(static_cast<ICoreUnit::Id>(target_ref.id()));
+			if (selected_attack_target == nullptr || selected_attack_target->IsHidden()
+			    || !selected_attack_target->IsInLOS()
+			    || !live_control_state_->EnemyVisual(target_ref.id())) {
+				dispatch_event->set_status(::highbar::v1::COMMAND_DISPATCH_SKIPPED_TARGET_MISSING);
+				auto* issue=dispatch_event->mutable_issue(); issue->set_code(::highbar::v1::INVALID_TARGET_UNIT);
+				issue->set_field_path("visible_attack_target"); issue->set_detail("LIVE_FENCE_TARGET_NOT_VISUAL");
+				continue;
+			}
+			if (live_control_state_->EnemyLifetime(target_ref.id()) != target_ref.lifetime()) {
+				dispatch_event->set_status(::highbar::v1::COMMAND_DISPATCH_SKIPPED_CAPABILITY_CHANGED);
+				auto* issue=dispatch_event->mutable_issue(); issue->set_code(::highbar::v1::STALE_UNIT_GENERATION);
+				issue->set_field_path("visible_attack_target.lifetime"); issue->set_detail("LIVE_FENCE_TARGET_LIFETIME_CHANGED");
+				continue;
+			}
+		}
 
 		// T015 — dispatch hot path guard. Engine-thread only; direct
 		// TransitionToDisabled is safe.
@@ -1387,10 +1523,48 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 			AppendCoordinatorTrace(
 				"dispatch begin kind=" + std::string(CommandKind(cmd))
 				+ " target=" + std::to_string(*target_id));
-			if (grpc::DispatchCommand(circuit, unit_ctx, cmd)) {
+			grpc::LiveFenceResult guarded{true, ::highbar::v1::LIVE_FENCE_REASON_UNSPECIFIED};
+			bool dispatched = false;
+			if (entry.live) {
+				guarded = live_control_state_ ? live_control_state_->DispatchGuarded(entry, [&] {
+					auto* fresh_actor = circuit->GetTeamUnit(static_cast<ICoreUnit::Id>(entry.live_actor.id()));
+					if (fresh_actor == nullptr || fresh_actor->IsDead()) {
+						AppendCoordinatorTrace("live dispatch refused reason=actor_missing_or_dead");
+						return false;
+					}
+					if (entry.live_semantic_action == ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE
+					    || entry.live_semantic_action == ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_APPEND) {
+						const auto& p = cmd.move_unit().to_position(); auto* map = circuit->GetMap();
+						if (map == nullptr || !std::isfinite(p.x()) || !std::isfinite(p.y()) || !std::isfinite(p.z())
+						    || p.x() < 0 || p.z() < 0 || p.x() > map->GetWidth()*8.0f-1.0f
+						    || p.z() > map->GetHeight()*8.0f-1.0f) {
+							AppendCoordinatorTrace(
+								"live dispatch refused reason=move_bounds x=" + std::to_string(p.x())
+								+ " y=" + std::to_string(p.y()) + " z=" + std::to_string(p.z()));
+							return false;
+						}
+					}
+					CEnemyInfo* fresh_target = nullptr;
+					if (entry.live_attack_target) {
+						fresh_target = circuit->GetEnemyInfo(static_cast<ICoreUnit::Id>(entry.live_attack_target->id()));
+						if (fresh_target == nullptr || fresh_target->IsHidden() || !fresh_target->IsInLOS()) return false;
+					}
+					const bool applied = grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
+					if (!applied) AppendCoordinatorTrace("live dispatch refused reason=engine_arm");
+					return applied;
+				}) : grpc::LiveFenceResult{};
+				dispatched = guarded.ok;
+			} else {
+				dispatched = live_control_state_
+					? live_control_state_->DispatchLegacyGuarded([&] {
+						return grpc::DispatchCommand(circuit, unit_ctx, cmd, selected_attack_target);
+					})
+					: grpc::DispatchCommand(circuit, unit_ctx, cmd, selected_attack_target);
+			}
+			if (dispatched) {
 				dispatch_event->set_status(
 					::highbar::v1::COMMAND_DISPATCH_APPLIED);
-				if (*target_id > 0) {
+				if (*target_id >= 0) {
 					order_state_tracker_->MarkAccepted(
 						static_cast<std::uint32_t>(*target_id),
 						entry.batch_seq,
@@ -1399,12 +1573,17 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						CommandKind(cmd));
 				}
 			} else {
+				if (entry.live) AppendCoordinatorTrace(
+					"live dispatch skipped fence=" + ::highbar::v1::LiveFenceReason_Name(guarded.reason));
 				dispatch_event->set_status(
 					::highbar::v1::COMMAND_DISPATCH_SKIPPED_UNSUPPORTED_ARM);
 				auto* issue = dispatch_event->mutable_issue();
-				issue->set_code(::highbar::v1::COMMAND_ARM_NOT_DISPATCHED);
-				issue->set_field_path("commands");
-				issue->set_detail("command arm was skipped by dispatcher");
+				issue->set_code(entry.live ? ::highbar::v1::STALE_UNIT_GENERATION
+				                           : ::highbar::v1::COMMAND_ARM_NOT_DISPATCHED);
+				issue->set_field_path(entry.live ? "live_fence" : "commands");
+				issue->set_detail(entry.live
+					? ::highbar::v1::LiveFenceReason_Name(guarded.reason)
+					: "command arm was skipped by dispatcher");
 				issue->set_retry_hint(::highbar::v1::RETRY_WITH_FRESH_CAPABILITIES);
 			}
 			AppendCoordinatorTrace(

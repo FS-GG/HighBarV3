@@ -50,6 +50,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
 	add_library(highbar_command_queue_test_support STATIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
 	target_include_directories(highbar_command_queue_test_support PUBLIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
@@ -78,6 +79,34 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			GTest::gtest_main)
 		add_test(NAME coordinator_command_admission_test
 			COMMAND coordinator_command_admission_test)
+
+		add_executable(live_control_state_test
+			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/live_control_state_test.cc")
+		target_include_directories(live_control_state_test PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+		target_link_libraries(live_control_state_test PRIVATE
+			highbar_command_queue_test_support
+			GTest::gtest GTest::gtest_main)
+		add_test(NAME live_control_state_test COMMAND live_control_state_test)
+
+		add_executable(state_update_projection_test
+			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/state_update_projection_test.cc")
+		target_include_directories(state_update_projection_test PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+		target_link_libraries(state_update_projection_test PRIVATE
+			highbar_proto
+			GTest::gtest GTest::gtest_main)
+		add_test(NAME state_update_projection_test
+			COMMAND state_update_projection_test)
+
+		add_executable(ai_move_flow_test
+			"${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/ai_move_flow_test.cc")
+		target_include_directories(ai_move_flow_test PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+		target_link_libraries(ai_move_flow_test PRIVATE
+			highbar_command_queue_test_support
+			GTest::gtest GTest::gtest_main)
+		add_test(NAME ai_move_flow_test COMMAND ai_move_flow_test)
 	else ()
 		message(WARNING "GTest not found; standalone CMake will build libraries only.")
 	endif ()
@@ -292,6 +321,7 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 
 			add_library(highbar_command_queue_test_support STATIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
 			target_include_directories(highbar_command_queue_test_support PUBLIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit"
@@ -306,6 +336,7 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandValidator.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CapabilityProvider.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/command_validator_test_stubs.cpp"
 				"${CMAKE_SOURCE_DIR}/rts/System/float3.cpp")
@@ -321,6 +352,7 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 			add_library(highbar_capability_test_support STATIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CapabilityProvider.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
 				"${CMAKE_SOURCE_DIR}/rts/System/float3.cpp")
 			target_include_directories(highbar_capability_test_support PUBLIC
@@ -375,7 +407,8 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 					gRPC::grpc++
 					protobuf::libprotobuf)
 				if (_test_name STREQUAL "command_queue_test"
-				    OR _test_name STREQUAL "coordinator_command_admission_test")
+				    OR _test_name STREQUAL "coordinator_command_admission_test"
+				    OR _test_name STREQUAL "live_control_state_test")
 					target_link_libraries("${_test_name}" PRIVATE
 						highbar_command_queue_test_support)
 					if (_test_name STREQUAL "coordinator_command_admission_test")

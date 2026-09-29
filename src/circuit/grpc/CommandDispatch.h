@@ -26,6 +26,7 @@
 namespace circuit {
 class CCircuitAI;
 class CCircuitUnit;
+class CEnemyInfo;
 }  // namespace circuit
 
 namespace circuit::grpc {
@@ -68,9 +69,6 @@ inline std::optional<std::int32_t> EffectiveDispatchTargetUnitId(
 	if (IsGameWideCommand(cmd)) {
 		return -1;
 	}
-	if (authoritative_target_unit_id == 0) {
-		return std::nullopt;
-	}
 	return authoritative_target_unit_id;
 }
 
@@ -84,6 +82,7 @@ inline std::optional<std::int32_t> EffectiveDispatchTargetUnitId(
 // with a log line) or when `unit == nullptr`.
 bool DispatchCommand(::circuit::CCircuitAI* ai,
                      ::circuit::CCircuitUnit* unit,
-                     const ::highbar::v1::AICommand& cmd);
+                     const ::highbar::v1::AICommand& cmd,
+                     ::circuit::CEnemyInfo* selected_attack_target = nullptr);
 
 }  // namespace circuit::grpc
