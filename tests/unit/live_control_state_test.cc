@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/CommandQueue.h"
 #include "grpc/LiveControlState.h"
+#include "grpc/TacticalNativeState.h"
 
 #include <gtest/gtest.h>
 #include <memory>
@@ -261,6 +262,90 @@ TEST(LiveControlState, TacticalFeatureQueueAndDescriptorFencesAreRechecked) {
 	snapshot.mutable_actors(0)->mutable_queue(0)->set_revision(11);
 	snapshot.mutable_actors(0)->mutable_descriptors(0)->set_disabled(true); state->RecordTacticalSnapshot(snapshot);
 	EXPECT_EQ(state->CheckTacticalCommand(batch).reason,LIVE_FENCE_CAPABILITY_CHANGED);
+}
+
+TEST(LiveControlState, FeatureDestroyedBeforeDrainRefusesStaleReclaimAndFreshReusePasses) {
+	auto state = State();
+	const auto t0 = LiveControlState::Clock::time_point{};
+	Apply(*state, LIVE_CONTROL_DIRECTIVE_KIND_ARM, 1);
+	const auto actor_lifetime = state->MarkOwnedPresent(0);
+	const auto basis = state->RecordBasis(
+		90, 100, 9000, 1, std::chrono::milliseconds(500), t0);
+	state->RecordTacticalCatalogue("catalogue", 17, true);
+
+	FeatureLifetimeLedger ledger;
+	const VisibleFeatureSample original{7, 70, 1.0f, 2.0f, 3.0f};
+	ASSERT_TRUE(ledger.ReplaceBoundedCompleteVisibleSnapshot(90, 1, {original}));
+	const auto stale = ledger.Reference(7);
+	ASSERT_TRUE(stale.has_value());
+
+	TacticalSnapshotMetadata snapshot;
+	snapshot.set_catalogue_id("catalogue");
+	snapshot.set_catalogue_revision(17);
+	auto* actor = snapshot.add_actors();
+	actor->mutable_actor()->set_id(0);
+	actor->mutable_actor()->set_lifetime(actor_lifetime);
+	actor->set_descriptor_revision(19);
+	actor->add_descriptors()->set_kind(NATIVE_TACTICAL_DESCRIPTOR_RECLAIM_FEATURE);
+	auto* queue = actor->add_queue();
+	queue->set_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER);
+	queue->set_revision(23);
+	queue->set_complete(true);
+	auto* feature = snapshot.add_features();
+	feature->mutable_reference()->set_id(stale->id);
+	feature->mutable_reference()->set_lifetime(stale->lifetime);
+	feature->set_definition_id(stale->def_id);
+	state->RecordTacticalSnapshot(snapshot);
+
+	QueuedCommand queued;
+	queued.live = true;
+	queued.live_binding = Binding(1);
+	queued.live_basis = basis;
+	queued.live_actor.set_id(0);
+	queued.live_actor.set_lifetime(actor_lifetime);
+	queued.live_semantic_action = LIVE_SEMANTIC_ACTION_RECLAIM_FEATURE;
+	queued.live_basis_deadline = queued.live_command_deadline
+		= queued.live_lease_deadline = t0 + std::chrono::milliseconds(500);
+	queued.live_tactical_command.emplace();
+	auto& tactical = *queued.live_tactical_command;
+	tactical.set_catalogue_id("catalogue");
+	tactical.set_catalogue_revision(17);
+	tactical.set_actor_descriptor_revision(19);
+	tactical.set_queue_domain(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER);
+	tactical.set_expected_queue_revision(23);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_id(stale->id);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_lifetime(stale->lifetime);
+	tactical.mutable_reclaim_feature()->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	ASSERT_TRUE(state->CheckQueuedCommand(queued, t0).ok);
+
+	ledger.MarkDestroyed(7);
+	// The cached tactical snapshot still admits the queued wire reference. The
+	// engine-thread ledger fence must therefore be the refusing boundary.
+	ASSERT_TRUE(state->CheckQueuedCommand(queued, t0).ok);
+	int engine_calls = 0;
+	auto result = state->DispatchGuarded(queued, [&] {
+		return DispatchCurrentFeatureReclaim(
+			&ledger, *stale, original, [&] { ++engine_calls; });
+	}, t0);
+	EXPECT_FALSE(result.ok);
+	EXPECT_EQ(result.reason, LIVE_FENCE_CAPABILITY_CHANGED);
+	EXPECT_EQ(engine_calls, 0);
+
+	const VisibleFeatureSample reused{7, 71, 4.0f, 5.0f, 6.0f};
+	ASSERT_TRUE(ledger.ReplaceBoundedCompleteVisibleSnapshot(91, 1, {reused}));
+	const auto fresh = ledger.Reference(7);
+	ASSERT_TRUE(fresh.has_value());
+	EXPECT_NE(fresh->lifetime, stale->lifetime);
+	snapshot.mutable_features(0)->mutable_reference()->set_lifetime(fresh->lifetime);
+	snapshot.mutable_features(0)->set_definition_id(fresh->def_id);
+	state->RecordTacticalSnapshot(snapshot);
+	tactical.mutable_reclaim_feature()->mutable_target()->set_lifetime(fresh->lifetime);
+	result = state->DispatchGuarded(queued, [&] {
+		return DispatchCurrentFeatureReclaim(
+			&ledger, *fresh, reused, [&] { ++engine_calls; });
+	}, t0);
+	EXPECT_TRUE(result.ok);
+	EXPECT_EQ(engine_calls, 1);
 }
 
 TEST(LiveControlState, TacticalBuildDefinitionBusyPolicyAndRallyFailClosed) {

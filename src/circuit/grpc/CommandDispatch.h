@@ -32,6 +32,8 @@ class CEnemyInfo;
 
 namespace circuit::grpc {
 
+class FeatureLifetimeLedger;
+
 inline bool IsGameWideCommand(const ::highbar::v1::AICommand& cmd) {
 	using C = ::highbar::v1::AICommand;
 	switch (cmd.command_case()) {
@@ -88,6 +90,7 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
 
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	::circuit::CCircuitUnit* unit,
-	const ::highbar::v1::NativeTacticalCommand& command);
+	const ::highbar::v1::NativeTacticalCommand& command,
+	const FeatureLifetimeLedger* feature_lifetimes);
 
 }  // namespace circuit::grpc

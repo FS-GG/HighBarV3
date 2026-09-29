@@ -135,6 +135,28 @@ bool FeatureLifetimeLedger::ReplaceCompleteVisibleSnapshot(
 	return true;
 }
 
+bool FeatureLifetimeLedger::ReplaceBoundedCompleteVisibleSnapshot(
+		std::uint64_t state_sequence,
+		std::size_t raw_count,
+		const std::vector<VisibleFeatureSample>& features) {
+	if (ClassifyTacticalFeaturePopulation(raw_count, features.size())
+			!= TacticalFeaturePopulationStatus::Complete
+		|| !ReplaceCompleteVisibleSnapshot(state_sequence, features)) {
+		InvalidateVisibleSnapshot();
+		return false;
+	}
+	return true;
+}
+
+void FeatureLifetimeLedger::InvalidateVisibleSnapshot() {
+	for (auto& item : entries_) {
+		if (item.second.visible) {
+			item.second.visible = false;
+			AdvanceLifetime(&item.second.lifetime);
+		}
+	}
+}
+
 void FeatureLifetimeLedger::MarkDestroyed(std::uint32_t id) {
 	auto* entry = Find(id);
 	if (entry->visible) {

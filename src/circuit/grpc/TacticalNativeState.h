@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -61,6 +62,24 @@ struct NativeFeatureReference {
 	std::uint64_t observed_state_sequence = 0;
 };
 
+inline constexpr std::size_t kTacticalFeatureCapacity = 512;
+
+enum class TacticalFeaturePopulationStatus {
+	Complete,
+	Overflow,
+	InvalidSample,
+};
+
+inline TacticalFeaturePopulationStatus ClassifyTacticalFeaturePopulation(
+		std::size_t raw_count, std::size_t valid_sample_count) {
+	if (raw_count > kTacticalFeatureCapacity) {
+		return TacticalFeaturePopulationStatus::Overflow;
+	}
+	return raw_count == valid_sample_count
+		? TacticalFeaturePopulationStatus::Complete
+		: TacticalFeaturePopulationStatus::InvalidSample;
+}
+
 // Feature ids can be reused and the AI callback exposes only currently visible
 // features. An absence in a complete visible snapshot ends the old lifetime;
 // a later observation starts a new one. A definition change is also a new
@@ -70,6 +89,11 @@ public:
 	bool ReplaceCompleteVisibleSnapshot(
 		std::uint64_t state_sequence,
 		const std::vector<VisibleFeatureSample>& features);
+	bool ReplaceBoundedCompleteVisibleSnapshot(
+		std::uint64_t state_sequence,
+		std::size_t raw_count,
+		const std::vector<VisibleFeatureSample>& features);
+	void InvalidateVisibleSnapshot();
 	void MarkDestroyed(std::uint32_t id);
 
 	std::optional<NativeFeatureReference> Reference(std::uint32_t id) const;
@@ -88,5 +112,18 @@ private:
 	std::vector<std::pair<std::uint32_t, Entry>> entries_;
 	std::uint64_t last_complete_state_sequence_ = 0;
 };
+
+template <typename Dispatch>
+bool DispatchCurrentFeatureReclaim(
+		const FeatureLifetimeLedger* ledger,
+		const NativeFeatureReference& reference,
+		const VisibleFeatureSample& current,
+		Dispatch&& dispatch) {
+	if (ledger == nullptr || !ledger->Matches(reference, current)) {
+		return false;
+	}
+	dispatch();
+	return true;
+}
 
 }  // namespace circuit::grpc

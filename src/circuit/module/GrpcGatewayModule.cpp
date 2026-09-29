@@ -87,7 +87,6 @@ constexpr std::size_t kTacticalMaxCatalogueEntries = 4096;
 constexpr std::size_t kTacticalPageEntries = 128;
 constexpr std::size_t kTacticalMaxBuildOptions = 256;
 constexpr std::size_t kTacticalMaxQueueEntries = 64;
-constexpr std::size_t kTacticalMaxFeatures = 256;
 constexpr std::size_t kTacticalMaxDescriptors = 32;
 constexpr std::uint32_t kTacticalMaxAreaRadius = 2048;
 
@@ -577,7 +576,7 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	tactical->set_max_catalogue_page_entries(kTacticalPageEntries);
 	tactical->set_max_build_options_per_actor(kTacticalMaxBuildOptions);
 	tactical->set_max_queue_entries_per_actor(kTacticalMaxQueueEntries);
-	tactical->set_max_feature_references(kTacticalMaxFeatures);
+	tactical->set_max_feature_references(grpc::kTacticalFeatureCapacity);
 	tactical->set_max_factory_production_count(1);
 	tactical->set_max_area_radius_world_units(kTacticalMaxAreaRadius);
 	tactical->set_max_command_descriptors_per_actor(kTacticalMaxDescriptors);
@@ -767,13 +766,15 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	fill_resource(econ->mutable_energy(), economy_manager != nullptr ? economy_manager->GetEnergyRes() : nullptr);
 
 	auto features = callback->GetFeatures();
-	if (grpc::TacticalCountExceedsLimit(features.size(), kTacticalMaxFeatures)) {
+	if (!tactical_feature_lifetimes_) tactical_feature_lifetimes_ = std::make_unique<grpc::FeatureLifetimeLedger>();
+	if (grpc::TacticalCountExceedsLimit(features.size(), grpc::kTacticalFeatureCapacity)) {
+		tactical_feature_lifetimes_->ReplaceBoundedCompleteVisibleSnapshot(
+			basis.state_sequence(), features.size(), {});
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureOverflow,
-			grpc::TacticalSuppressionSource::None, features.size(), kTacticalMaxFeatures});
+			grpc::TacticalSuppressionSource::None, features.size(), grpc::kTacticalFeatureCapacity});
 		utils::free_clear(features);
 		return;
 	}
-	if (!tactical_feature_lifetimes_) tactical_feature_lifetimes_ = std::make_unique<grpc::FeatureLifetimeLedger>();
 	std::vector<grpc::VisibleFeatureSample> feature_samples;
 	std::vector<float> feature_reclaim;
 	feature_samples.reserve(features.size());
@@ -786,9 +787,10 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		feature_reclaim.push_back(feature->GetReclaimLeft());
 		delete def;
 	}
-	if (!tactical_feature_lifetimes_->ReplaceCompleteVisibleSnapshot(basis.state_sequence(), feature_samples)) {
+	if (!tactical_feature_lifetimes_->ReplaceBoundedCompleteVisibleSnapshot(
+			basis.state_sequence(), features.size(), feature_samples)) {
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::FeatureLedgerRejected,
-			grpc::TacticalSuppressionSource::None, feature_samples.size(), kTacticalMaxFeatures});
+			grpc::TacticalSuppressionSource::None, features.size(), grpc::kTacticalFeatureCapacity});
 		utils::free_clear(features);
 		return;
 	}
@@ -2116,7 +2118,8 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						if (fresh_target == nullptr || fresh_target->IsHidden() || !fresh_target->IsInLOS()) return false;
 					}
 					const bool applied = entry.live_tactical_command
-						? grpc::DispatchTacticalCommand(circuit, fresh_actor, *entry.live_tactical_command)
+						? grpc::DispatchTacticalCommand(circuit, fresh_actor,
+							*entry.live_tactical_command, tactical_feature_lifetimes_.get())
 						: grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
 					if (!applied) AppendCoordinatorTrace("live dispatch refused reason=engine_arm");
 					return applied;

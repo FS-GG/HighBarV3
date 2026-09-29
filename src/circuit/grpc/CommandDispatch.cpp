@@ -4,6 +4,7 @@
 
 #include "grpc/CommandDispatch.h"
 #include "grpc/GrpcLog.h"
+#include "grpc/TacticalNativeState.h"
 
 #include "CircuitAI.h"
 #include "unit/CircuitDef.h"
@@ -22,6 +23,7 @@
 #include <Economy.h>
 #include <Resource.h>
 #include <Feature.h>
+#include <FeatureDef.h>
 #include <Map.h>
 #include "spring/SpringCallback.h"
 #include "spring/SpringMap.h"
@@ -63,7 +65,8 @@ springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		::circuit::CCircuitUnit* unit,
-		const ::highbar::v1::NativeTacticalCommand& command) {
+		const ::highbar::v1::NativeTacticalCommand& command,
+		const FeatureLifetimeLedger* feature_lifetimes) {
 	if (ai == nullptr || unit == nullptr || unit->GetUnit() == nullptr) return false;
 	auto* native = unit->GetUnit();
 	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
@@ -90,7 +93,42 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));return true;}
 	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));return true;}
 	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit:{auto* target=friendly(command.reclaim_unit().target());if(target==nullptr||target->IsDead())return false;unit->CmdReclaimUnit(target,TacticalOptions(command.reclaim_unit().queue_policy()));return true;}
-	case ::highbar::v1::NativeTacticalCommand::kReclaimFeature:{auto features=ai->GetCallback()->GetFeatures();springai::Feature* selected=nullptr;for(auto* f:features)if(f!=nullptr&&f->GetFeatureId()==static_cast<int>(command.reclaim_feature().target().id())){selected=f;break;}if(selected==nullptr){utils::free_clear(features);return false;}unit->CmdReclaimFeature(selected,TacticalOptions(command.reclaim_feature().queue_policy()));utils::free_clear(features);return true;}
+	case ::highbar::v1::NativeTacticalCommand::kReclaimFeature: {
+		auto* callback = ai->GetCallback();
+		if (callback == nullptr) return false;
+		auto features = callback->GetFeatures();
+		springai::Feature* selected = nullptr;
+		VisibleFeatureSample current;
+		for (auto* feature : features) {
+			if (feature == nullptr
+				|| feature->GetFeatureId()
+					!= static_cast<int>(command.reclaim_feature().target().id())) {
+				continue;
+			}
+			auto* definition = feature->GetDef();
+			const auto position = feature->GetPosition();
+			if (definition != nullptr && definition->GetFeatureDefId() > 0
+				&& std::isfinite(position.x) && std::isfinite(position.y)
+				&& std::isfinite(position.z)) {
+				selected = feature;
+				current = {static_cast<std::uint32_t>(feature->GetFeatureId()),
+					static_cast<std::uint32_t>(definition->GetFeatureDefId()),
+					position.x, position.y, position.z};
+			}
+			delete definition;
+			break;
+		}
+		const auto& wire = command.reclaim_feature().target();
+		const NativeFeatureReference reference{
+			wire.id(), wire.lifetime(), current.def_id, 0};
+		const bool dispatched = selected != nullptr
+			&& DispatchCurrentFeatureReclaim(feature_lifetimes, reference, current, [&] {
+				unit->CmdReclaimFeature(selected,
+					TacticalOptions(command.reclaim_feature().queue_policy()));
+			});
+		utils::free_clear(features);
+		return dispatched;
+	}
 	case ::highbar::v1::NativeTacticalCommand::kReclaimArea:{const auto& body=command.reclaim_area();if(!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>kMaximumTacticalAreaRadius)return false;unit->CmdReclaimInArea(position(body.center()),body.radius_world_units(),TacticalOptions(body.queue_policy()));return true;}
 	case ::highbar::v1::NativeTacticalCommand::kSetRally:{const auto pos=position(command.set_rally().position());if(!std::isfinite(pos.x)||!std::isfinite(pos.y)||!std::isfinite(pos.z))return false;native->MoveTo(pos,0);return true;}
 	case ::highbar::v1::NativeTacticalCommand::kQueueEdit:{const auto& edit=command.queue_edit();short outer=edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION?UNIT_COMMAND_OPTION_CONTROL_KEY:0;if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG){native->ExecuteCustomCommand(CMD_REMOVE,{static_cast<float>(edit.remove_native_tag())},outer);return true;}if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT){if(edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY)return false;native->SetRepeat(edit.repeat());return true;}if(edit.kind()!=::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT||!edit.has_insert())return false;const auto& in=edit.insert();int id=0;short inserted_options=0;std::vector<float> params;
