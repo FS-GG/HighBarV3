@@ -75,36 +75,21 @@ TEST(StateUpdateProjection, LegacyBytesStayExactAndCoordinatorKeepsFeedback) {
 	EXPECT_EQ(after, before) << "coordinator projection mutated legacy ring/bus bytes";
 }
 
-TEST(StateUpdateProjection, SparseOnlyDeltaIsSkippedBeforeActualHealthSnapshot) {
+TEST(StateUpdateProjection, SparseOnlyDamageDoesNotReachCoordinatorAsDelta) {
 	::highbar::v1::StateUpdate legacy;
 	legacy.set_seq(113);
 	legacy.mutable_delta()->add_events()->mutable_enemy_damaged()->set_enemy_id(77);
 	::highbar::v1::StateUpdate projected;
 	EXPECT_FALSE(BuildCoordinatorDeltaProjection(legacy, &projected));
 	EXPECT_EQ(projected.delta().events_size(), 0);
-
-	::highbar::v1::StateUpdate replacement;
-	replacement.set_seq(114);
-	auto* enemy = replacement.mutable_snapshot()->add_visible_enemies();
-	enemy->set_unit_id(77);
-	enemy->set_health(725.0f);
-	enemy->set_max_health(1000.0f);
-	EXPECT_EQ(replacement.seq(), legacy.seq() + 1);
-	EXPECT_EQ(replacement.snapshot().visible_enemies(0).health(), 725.0f);
 }
 
-TEST(StateUpdateProjection, DestroyArmIsSkippedBeforeEnemyAbsentSnapshot) {
+TEST(StateUpdateProjection, SparseOnlyDestroyDoesNotReachCoordinatorAsDelta) {
 	::highbar::v1::StateUpdate legacy;
 	legacy.set_seq(200);
 	legacy.mutable_delta()->add_events()->mutable_enemy_destroyed()->set_enemy_id(77);
 	::highbar::v1::StateUpdate projected;
 	EXPECT_FALSE(BuildCoordinatorDeltaProjection(legacy, &projected));
-
-	::highbar::v1::StateUpdate replacement;
-	replacement.set_seq(201);
-	replacement.mutable_snapshot()->set_frame_number(901);
-	EXPECT_EQ(replacement.seq(), legacy.seq() + 1);
-	EXPECT_TRUE(replacement.snapshot().visible_enemies().empty());
 }
 
 TEST(StateUpdateProjection, DamageBoundaryRefreshesSpringCacheBeforeReplacement) {

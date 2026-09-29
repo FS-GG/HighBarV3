@@ -769,7 +769,7 @@ void CGrpcGatewayModule::OnEnemyLeaveRadar(CEnemyInfo* enemy) {
 void CGrpcGatewayModule::OnEnemyDamaged(CEnemyInfo* enemy) {
 	HB_HOOK_GUARD_VOID({
 		if (enemy == nullptr) return;
-		// The engine event exposes no damage amount. Refresh the authoritative
+		// This gateway hook does not carry a damage amount. Refresh the authoritative
 		// visible-unit cache from Spring instead of publishing damage=0 as a
 		// guessed health decrement, then replace the sparse event with a full
 		// snapshot at the end of this frame.

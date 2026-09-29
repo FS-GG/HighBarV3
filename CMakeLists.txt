@@ -89,6 +89,16 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			GTest::gtest GTest::gtest_main)
 		add_test(NAME live_control_state_test COMMAND live_control_state_test)
 
+		add_executable(state_update_projection_test
+			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/state_update_projection_test.cc")
+		target_include_directories(state_update_projection_test PRIVATE
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+		target_link_libraries(state_update_projection_test PRIVATE
+			highbar_proto
+			GTest::gtest GTest::gtest_main)
+		add_test(NAME state_update_projection_test
+			COMMAND state_update_projection_test)
+
 		add_executable(ai_move_flow_test
 			"${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/ai_move_flow_test.cc")
 		target_include_directories(ai_move_flow_test PRIVATE
