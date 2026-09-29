@@ -21,6 +21,7 @@
 #include "grpc/OrderStateTracker.h"
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
+#include "grpc/TacticalCatalogueProjection.h"
 #include "grpc/SchemaVersion.h"
 #include "grpc/SnapshotBuilder.h"
 #include "SpringHeadlessPin.h"  // T006 — kEngineReleaseId / kEngineSha256
@@ -595,9 +596,11 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 		for (auto* definition : definitions) {
 			if (definition == nullptr || definition->GetUnitDefId() <= 0) continue;
 			::highbar::v1::NativeUnitDefinition out;
+			const char* internal_name = definition->GetName();
+			const char* human_name = definition->GetHumanName();
 			out.set_definition_id(static_cast<std::uint32_t>(definition->GetUnitDefId()));
-			out.set_internal_name(definition->GetName() != nullptr ? definition->GetName() : "");
-			out.set_display_name(definition->GetHumanName() != nullptr ? definition->GetHumanName() : "");
+			out.set_internal_name(internal_name != nullptr ? internal_name : "");
+			out.set_display_name(grpc::TacticalCatalogueDisplayName(internal_name, human_name));
 			out.set_footprint_x_cells(static_cast<std::uint32_t>(std::max(0, definition->GetXSize())));
 			out.set_footprint_z_cells(static_cast<std::uint32_t>(std::max(0, definition->GetZSize())));
 			auto* cost = out.mutable_cost();
