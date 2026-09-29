@@ -62,8 +62,18 @@ springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		::circuit::CCircuitUnit* unit,
 		const ::highbar::v1::NativeTacticalCommand& command,
-		const FeatureLifetimeLedger* feature_lifetimes) {
-	if (ai == nullptr || unit == nullptr || unit->GetUnit() == nullptr) return false;
+		const FeatureLifetimeLedger* feature_lifetimes,
+		TacticalDispatchRefusalReason* refusal_reason) {
+	auto refuse = [&](TacticalDispatchRefusalReason reason) {
+		if (refusal_reason != nullptr) *refusal_reason = reason;
+		return false;
+	};
+	if (refusal_reason != nullptr) {
+		*refusal_reason = TacticalDispatchRefusalReason::kUnsupportedOrInvalidArm;
+	}
+	if (ai == nullptr || unit == nullptr || unit->GetUnit() == nullptr) {
+		return refuse(TacticalDispatchRefusalReason::kInvalidContext);
+	}
 	auto* native = unit->GetUnit();
 	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
 		return ai->GetTeamUnit(static_cast<ICoreUnit::Id>(ref.id()));
@@ -75,13 +85,29 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	case ::highbar::v1::NativeTacticalCommand::kBuild: {
 		const auto& body = command.build();
 		auto* def = ai->GetCircuitDefSafe(body.definition_id());
-		if (def == nullptr || !unit->GetCircuitDef()->CanBuild(def)) return false;
+		if (def == nullptr) {
+			return refuse(TacticalDispatchRefusalReason::kBuildDefinitionMissing);
+		}
+		auto* actor_def = unit->GetCircuitDef();
+		if (actor_def == nullptr || !actor_def->CanBuild(def)) {
+			return refuse(TacticalDispatchRefusalReason::kBuildCapabilityChanged);
+		}
 		const auto pos = position(body.position());
 		const int facing = EngineFacingForNativeBuild(body.facing());
 		auto* map = ai->GetMap();
-		if (map == nullptr || facing < 0 || !std::isfinite(pos.x)
-		    || !std::isfinite(pos.y) || !std::isfinite(pos.z)
-		    || !map->IsPossibleToBuildAt(def->GetDef(), pos, facing)) return false;
+		if (map == nullptr) {
+			return refuse(TacticalDispatchRefusalReason::kBuildMapUnavailable);
+		}
+		if (facing < 0) {
+			return refuse(TacticalDispatchRefusalReason::kBuildFacingInvalid);
+		}
+		if (!std::isfinite(pos.x) || !std::isfinite(pos.y)
+		    || !std::isfinite(pos.z)) {
+			return refuse(TacticalDispatchRefusalReason::kBuildPositionNonFinite);
+		}
+		if (!map->IsPossibleToBuildAt(def->GetDef(), pos, facing)) {
+			return refuse(TacticalDispatchRefusalReason::kBuildSiteUnavailable);
+		}
 		unit->CmdBuild(def, pos, facing, TacticalOptions(body.queue_policy()));
 		return true;
 	}

@@ -20,6 +20,7 @@
 
 #include "highbar/commands.pb.h"
 #include "highbar/live_control.pb.h"
+#include "grpc/TacticalDispatchDiagnostic.h"
 
 #include <cstdint>
 #include <optional>
@@ -99,9 +100,12 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
                      const ::highbar::v1::AICommand& cmd,
                      ::circuit::CEnemyInfo* selected_attack_target = nullptr);
 
+// `refusal_reason` is written only when dispatch returns false.  It feeds the
+// existing opt-in coordinator trace with a fixed, payload-free reason label.
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	::circuit::CCircuitUnit* unit,
 	const ::highbar::v1::NativeTacticalCommand& command,
-	const FeatureLifetimeLedger* feature_lifetimes);
+	const FeatureLifetimeLedger* feature_lifetimes,
+	TacticalDispatchRefusalReason* refusal_reason = nullptr);
 
 }  // namespace circuit::grpc

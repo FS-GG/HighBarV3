@@ -118,6 +118,17 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			add_test(NAME tactical_feature_capacity_test COMMAND tactical_feature_capacity_test)
 		endif ()
 
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_dispatch_diagnostic_test.cc")
+			add_executable(tactical_dispatch_diagnostic_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_dispatch_diagnostic_test.cc")
+			target_include_directories(tactical_dispatch_diagnostic_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(tactical_dispatch_diagnostic_test PRIVATE
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME tactical_dispatch_diagnostic_test
+				COMMAND tactical_dispatch_diagnostic_test)
+		endif ()
+
 		add_executable(state_update_projection_test
 			"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/state_update_projection_test.cc")
 		target_include_directories(state_update_projection_test PRIVATE

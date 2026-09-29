@@ -2153,11 +2153,19 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						fresh_target = circuit->GetEnemyInfo(static_cast<ICoreUnit::Id>(entry.live_attack_target->id()));
 						if (fresh_target == nullptr || fresh_target->IsHidden() || !fresh_target->IsInLOS()) return false;
 					}
+					grpc::TacticalDispatchRefusalReason tactical_refusal =
+						grpc::TacticalDispatchRefusalReason::kUnsupportedOrInvalidArm;
 					const bool applied = entry.live_tactical_command
 						? grpc::DispatchTacticalCommand(circuit, fresh_actor,
-							*entry.live_tactical_command, tactical_feature_lifetimes_.get())
+							*entry.live_tactical_command, tactical_feature_lifetimes_.get(),
+							&tactical_refusal)
 						: grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
-					if (!applied) AppendCoordinatorTrace("live dispatch refused reason=engine_arm");
+					if (!applied) {
+						AppendCoordinatorTrace(entry.live_tactical_command
+							? "live dispatch refused reason=engine_arm predicate="
+								+ std::string(grpc::TacticalDispatchRefusalReasonName(tactical_refusal))
+							: "live dispatch refused reason=engine_arm");
+					}
 					return applied;
 				}) : grpc::LiveFenceResult{};
 				dispatched = guarded.ok;
