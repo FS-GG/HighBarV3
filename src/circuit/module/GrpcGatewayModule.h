@@ -57,6 +57,8 @@ class OrderStateTracker;
 class CoordinatorClient;
 class LiveControlState;
 class FeatureLifetimeLedger;
+class MixedLifecycleQualification;
+struct QueuedCommand;
 }  // namespace circuit::grpc
 
 namespace circuit {
@@ -226,6 +228,8 @@ private:
 	std::unique_ptr<grpc::OrderStateTracker> order_state_tracker_;
 	std::unique_ptr<grpc::LiveControlState> live_control_state_;
 	std::unique_ptr<grpc::FeatureLifetimeLedger> tactical_feature_lifetimes_;
+	std::unique_ptr<grpc::MixedLifecycleQualification> mixed_lifecycle_qualification_;
+	std::unique_ptr<grpc::QueuedCommand> mixed_lifecycle_held_command_;
 	std::unique_ptr<grpc::HighBarService> service_;
 	std::optional<grpc::TransportEndpoint> deferred_service_bind_endpoint_;
 	bool service_bound_ = false;
@@ -279,6 +283,9 @@ private:
 	// T057 helper: drain CommandQueue, dispatch each via
 	// CCircuitUnit::Cmd*. Engine-thread only.
 	void DrainCommandQueue();
+	bool BeginMixedLifecycleQualificationFrame();
+	bool MaybeStartMixedLifecycleQualification(
+		const grpc::QueuedCommand& command);
 	void DrainAdminActionQueue();
 	bool ApplyAdminAction(const ::highbar::v1::AdminAction& action);
 	// Minimal InvokeCallback bridge. Worker threads enqueue callback

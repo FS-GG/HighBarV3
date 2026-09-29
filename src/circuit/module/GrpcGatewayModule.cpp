@@ -10,6 +10,7 @@
 #include "grpc/AuthToken.h"
 #include "grpc/CommandDispatch.h"
 #include "grpc/CommandQueue.h"
+#include "grpc/MixedLifecycleQualification.h"
 #include "grpc/Config.h"
 #include "grpc/CoordinatorClient.h"
 #include "grpc/Counters.h"
@@ -342,6 +343,9 @@ CGrpcGatewayModule::CGrpcGatewayModule(CCircuitAI* ai)
 		                           endpoint.snapshot_tick.snapshot_max_units});
 		live_max_observation_age_ms_ = endpoint.live_control.max_observation_age_ms;
 		live_max_reported_units_ = endpoint.live_control.max_reported_units;
+		mixed_lifecycle_qualification_ =
+			std::make_unique<grpc::MixedLifecycleQualification>(
+				endpoint.live_control.mixed_lifecycle_qualification_path);
 		if (endpoint.transport == grpc::Transport::kUds) {
 			socket_path_ = grpc::ResolveUdsPath(endpoint, ai);
 		}
@@ -506,6 +510,11 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	coordinator_client_ = std::make_unique<grpc::CoordinatorClient>(
 		circuit, coordinator_endpoint_, coordinator_plugin_id_,
 		coordinator_engine_sha256_);
+	coordinator_client_->SetLiveAdmissionObserver(
+		[this](const ::highbar::v1::LiveCommandBatch& live) {
+			if (mixed_lifecycle_qualification_ != nullptr)
+				(void)mixed_lifecycle_qualification_->PublishAcceptedGuard(live);
+		});
 	const auto identity_seed = coordinator_plugin_id_ + "-" + std::to_string(NowMicros());
 	live_control_state_ = std::make_unique<grpc::LiveControlState>(
 		coordinator_plugin_id_, identity_seed + "-process", grpc::LiveControlState::NewMatchIncarnation(),
@@ -1043,6 +1052,11 @@ void CGrpcGatewayModule::OnUnitDamagedFull(CCircuitUnit* unit,
 int CGrpcGatewayModule::UnitDestroyed(CCircuitUnit* unit, CEnemyInfo* attacker) {
 	HB_HOOK_GUARD_INT({
 		if (unit == nullptr) return 0;
+		if (mixed_lifecycle_qualification_ != nullptr && live_control_state_ != nullptr) {
+			const auto id = static_cast<std::uint32_t>(unit->GetId());
+			mixed_lifecycle_qualification_->ObserveDestroyed(
+				id, live_control_state_->OwnedLifetime(id));
+		}
 		if (live_control_state_)
 			live_control_state_->MarkOwnedRemoved(static_cast<std::uint32_t>(unit->GetId()));
 		order_state_tracker_->MarkUnitRemoved(
@@ -1239,6 +1253,7 @@ void CGrpcGatewayModule::OnFrameTick() {
 			admin_service_->ExpireLeases();
 		}
 		DrainAdminActionQueue();
+		if (!BeginMixedLifecycleQualificationFrame()) return;
 
 		// T057: drain external-AI commands at the top of the frame so
 		// they land in the engine this tick. Engine-thread only.
@@ -1559,6 +1574,56 @@ CGrpcGatewayModule::CallbackRpcStatus CGrpcGatewayModule::InvokeCallback(
 // matching CCircuitUnit::Cmd*. Re-resolves the target unit here
 // rather than trusting the worker-thread validation result — a unit
 // can die between validate-at-submission and drain-at-frame.
+bool CGrpcGatewayModule::BeginMixedLifecycleQualificationFrame() {
+	if (mixed_lifecycle_qualification_ == nullptr
+	    || !mixed_lifecycle_qualification_->Enabled()) return true;
+	const auto request = mixed_lifecycle_qualification_->BeginEngineFrame(CurrentFrame());
+	if (!request.has_value()) return true;
+	if (circuit == nullptr || circuit->GetLua() == nullptr) {
+		mixed_lifecycle_qualification_->Fail();
+		TransitionToDisabled("qualification", "mixed_lifecycle_lua_unavailable",
+		                     "qualification binding matched but LuaRules is unavailable");
+		return false;
+	}
+	const std::string message =
+		"highbar_barc_mixed_lifecycle_fault:"
+		+ std::to_string(request->actor_id) + ":"
+		+ std::to_string(request->actor_lifetime) + ":" + request->nonce;
+	const auto response = circuit->GetLua()->CallRules(
+		message.c_str(), static_cast<int>(message.size()));
+	if (response != "ok") {
+		mixed_lifecycle_qualification_->Fail();
+		TransitionToDisabled("qualification", "mixed_lifecycle_gadget_refused",
+		                     "qualification gadget did not acknowledge the exact one-shot request");
+		return false;
+	}
+	AppendCoordinatorTrace(
+		"mixed lifecycle qualification requested actor="
+		+ std::to_string(request->actor_id)
+		+ " batch=" + std::to_string(request->batch_seq)
+		+ " frame=" + std::to_string(CurrentFrame()));
+	return true;
+}
+
+bool CGrpcGatewayModule::MaybeStartMixedLifecycleQualification(
+		const grpc::QueuedCommand& command) {
+	if (mixed_lifecycle_qualification_ == nullptr
+	    || !mixed_lifecycle_qualification_->Enabled() || !command.live
+	    || command.live_semantic_action != ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD)
+		return true;
+	// The queue itself is the atomic reader-to-engine publication. This
+	// engine-side claim closes the narrow race in which a frame drain acquires
+	// the queued command after admission but before the reader observer runs.
+	::highbar::v1::LiveCommandBatch live;
+	live.set_semantic_action(command.live_semantic_action);
+	*live.mutable_binding() = command.live_binding;
+	*live.mutable_actor() = command.live_actor;
+	live.mutable_batch()->set_batch_seq(command.batch_seq);
+	live.mutable_batch()->set_client_command_id(command.client_command_id);
+	(void)mixed_lifecycle_qualification_->PublishAcceptedGuard(live);
+	return BeginMixedLifecycleQualificationFrame();
+}
+
 void CGrpcGatewayModule::DrainCallbackQueue() {
 	if (circuit == nullptr) return;
 
@@ -1784,10 +1849,44 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 	if (command_queue_ == nullptr || circuit == nullptr) return;
 
 	std::vector<grpc::QueuedCommand> batch;
+	auto qualification_decision = mixed_lifecycle_qualification_ != nullptr
+		? mixed_lifecycle_qualification_->DecisionForFrame(CurrentFrame())
+		: grpc::MixedLifecycleQualification::Decision::kInactive;
+	if (qualification_decision == grpc::MixedLifecycleQualification::Decision::kFailure) {
+		mixed_lifecycle_held_command_.reset();
+		TransitionToDisabled("qualification", "mixed_lifecycle_callback_missing",
+		                     "real UnitDestroyed callback was not observed within one engine frame");
+		return;
+	}
+	if (qualification_decision == grpc::MixedLifecycleQualification::Decision::kRelease
+	    && mixed_lifecycle_held_command_ != nullptr) {
+		batch.push_back(std::move(*mixed_lifecycle_held_command_));
+		mixed_lifecycle_held_command_.reset();
+	}
 	const std::size_t drained = command_queue_->Drain(&batch);
-	if (drained == 0) return;
+	if (drained == 0 && batch.empty()) return;
 
 	for (auto& entry : batch) {
+		if (qualification_decision == grpc::MixedLifecycleQualification::Decision::kInactive) {
+			if (!MaybeStartMixedLifecycleQualification(entry)) return;
+			qualification_decision = mixed_lifecycle_qualification_ != nullptr
+				? mixed_lifecycle_qualification_->DecisionForFrame(CurrentFrame())
+				: grpc::MixedLifecycleQualification::Decision::kInactive;
+		}
+		if (qualification_decision == grpc::MixedLifecycleQualification::Decision::kHold
+		    && entry.live && mixed_lifecycle_qualification_->Matches(
+			    entry.batch_seq, entry.client_command_id, entry.live_actor.id(),
+			    entry.live_actor.lifetime(), entry.live_binding.match_incarnation())) {
+			if (mixed_lifecycle_held_command_ != nullptr) {
+				mixed_lifecycle_qualification_->Fail();
+				TransitionToDisabled("qualification", "mixed_lifecycle_duplicate_match",
+				                     "more than one queued command matched the one-shot binding");
+				return;
+			}
+			mixed_lifecycle_held_command_ =
+				std::make_unique<grpc::QueuedCommand>(std::move(entry));
+			continue;
+		}
 		// The validator accepted a single authoritative batch target and
 		// that normalized target is preserved on the queue entry.
 		const auto& cmd = entry.command;

@@ -264,6 +264,9 @@ void CoordinatorClient::LiveCommandReaderLoop(CommandQueue* sink, LiveControlSta
 			backoff_ms = 200; ::highbar::v1::LiveCommandBatch live;
 			while (reader->Read(&live)) {
 				const auto admission = AdmitLiveCommandBatch(*sink, live, plugin_id_ + "-live", *state);
+				if (admission.accepted() && live_admission_observer_) {
+					live_admission_observer_(live);
+				}
 				(void)ReportCommandBatchResult(live.binding().command_channel_incarnation(), live.batch(), admission);
 			}
 			(void)reader->Finish();
