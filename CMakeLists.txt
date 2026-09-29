@@ -341,6 +341,10 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+			if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+				target_sources(highbar_command_queue_test_support PRIVATE
+					"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
+			endif ()
 			target_include_directories(highbar_command_queue_test_support PUBLIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit"
 				"${HIGHBAR_PROTO_GEN_DIR}"
@@ -426,7 +430,8 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 					protobuf::libprotobuf)
 				if (_test_name STREQUAL "command_queue_test"
 				    OR _test_name STREQUAL "coordinator_command_admission_test"
-				    OR _test_name STREQUAL "live_control_state_test")
+				    OR _test_name STREQUAL "live_control_state_test"
+				    OR _test_name STREQUAL "tactical_native_state_test")
 					target_link_libraries("${_test_name}" PRIVATE
 						highbar_command_queue_test_support)
 					if (_test_name STREQUAL "coordinator_command_admission_test")
