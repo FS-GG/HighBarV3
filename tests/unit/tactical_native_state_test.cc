@@ -94,6 +94,17 @@ TEST(TacticalNativeState, ExistingControlIsStableAndFailedFenceHasNoEffect) {
 	EXPECT_EQ(effects, 1);
 }
 
+TEST(TacticalNativeState, ActorWithoutAutonomousOwnerDispatchesWithoutAcquisition) {
+	int acquisitions = 0;
+	int effects = 0;
+	EXPECT_TRUE(DispatchAfterTacticalControlFence(true, [&] {
+		++acquisitions;
+		return false;
+	}, [&] { ++effects; }));
+	EXPECT_EQ(acquisitions, 0);
+	EXPECT_EQ(effects, 1);
+}
+
 TEST(TacticalNativeState, FeatureIdZeroIsPresenceSafeAndStableWhileVisible) {
 	FeatureLifetimeLedger ledger;
 	ASSERT_TRUE(ledger.ReplaceCompleteVisibleSnapshot(10, {{0, 7, 1, 2, 3}}));
