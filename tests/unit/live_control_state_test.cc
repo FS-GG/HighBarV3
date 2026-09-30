@@ -521,6 +521,16 @@ TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOpti
 	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
 }
 
+TEST(LiveControlState, NativeBuildMissingElevationUsesLiveTerrainHeight) {
+	NativePosition3 position;
+	position.set_x(1800.0f);
+	position.set_z(1864.0f);
+	EXPECT_FLOAT_EQ(EngineElevationForNativeBuild(position, 331.304f), 331.304f);
+
+	position.set_elevation(345.0f);
+	EXPECT_FLOAT_EQ(EngineElevationForNativeBuild(position, 331.304f), 345.0f);
+}
+
 TEST(LiveControlState, RallyAdmissionRequiresExactLegacyMoveAndFreshRallyQueue) {
 	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
 	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
