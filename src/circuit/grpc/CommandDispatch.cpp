@@ -166,7 +166,6 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		if (actor_def == nullptr || !actor_def->CanBuild(def)) {
 			return refuse(TacticalDispatchRefusalReason::kBuildCapabilityChanged);
 		}
-		const auto pos = position(body.position());
 		const int facing = EngineFacingForNativeBuild(body.facing());
 		auto* map = ai->GetMap();
 		if (map == nullptr) {
@@ -175,8 +174,15 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		if (facing < 0) {
 			return refuse(TacticalDispatchRefusalReason::kBuildFacingInvalid);
 		}
-		if (!std::isfinite(pos.x) || !std::isfinite(pos.y)
-		    || !std::isfinite(pos.z)) {
+		const auto& requested = body.position();
+		if (!std::isfinite(requested.x()) || !std::isfinite(requested.z())) {
+			return refuse(TacticalDispatchRefusalReason::kBuildPositionNonFinite);
+		}
+		const auto pos = springai::AIFloat3(requested.x(),
+			EngineElevationForNativeBuild(
+				requested, map->GetElevationAt(requested.x(), requested.z())),
+			requested.z());
+		if (!std::isfinite(pos.y)) {
 			return refuse(TacticalDispatchRefusalReason::kBuildPositionNonFinite);
 		}
 		if (!map->IsPossibleToBuildAt(def->GetDef(), pos, facing)) {

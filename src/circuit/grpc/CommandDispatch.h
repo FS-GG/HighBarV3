@@ -46,6 +46,12 @@ constexpr int EngineFacingForNativeBuild(
 	}
 }
 
+inline float EngineElevationForNativeBuild(
+		const ::highbar::v1::NativePosition3& position,
+		float terrain_elevation) {
+	return position.has_elevation() ? position.elevation() : terrain_elevation;
+}
+
 inline bool IsGameWideCommand(const ::highbar::v1::AICommand& cmd) {
 	using C = ::highbar::v1::AICommand;
 	switch (cmd.command_case()) {
