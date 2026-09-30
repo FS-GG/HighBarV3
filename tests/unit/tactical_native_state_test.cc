@@ -45,6 +45,22 @@ TEST(TacticalNativeState, QueueRevisionCoversOrderTagsOptionsTimeoutAndFloatBits
 	EXPECT_NE(ComputeNativeQueueRevision({first, second}), baseline.revision);
 }
 
+TEST(TacticalNativeState, FinalQueueFenceRequiresExactRevisionAndNativeTag) {
+	const std::vector<NativeQueueEntry> current{
+		{1, 10, 0, 41, 900, {1.0f}},
+		{1, 20, 32, 42, 901, {2.0f}},
+	};
+	const auto revision = ComputeNativeQueueRevision(current);
+	EXPECT_TRUE(NativeQueueMatchesExpected(current, revision));
+	EXPECT_TRUE(NativeQueueMatchesExpected(current, revision, 42));
+	EXPECT_FALSE(NativeQueueMatchesExpected(current, revision, 99));
+	EXPECT_FALSE(NativeQueueMatchesExpected(current, revision + 1, 42));
+	EXPECT_FALSE(NativeQueueMatchesExpected(current, 0));
+	auto changed = current;
+	changed[1].options = 0;
+	EXPECT_FALSE(NativeQueueMatchesExpected(changed, revision, 42));
+}
+
 TEST(TacticalNativeState, FeatureIdZeroIsPresenceSafeAndStableWhileVisible) {
 	FeatureLifetimeLedger ledger;
 	ASSERT_TRUE(ledger.ReplaceCompleteVisibleSnapshot(10, {{0, 7, 1, 2, 3}}));

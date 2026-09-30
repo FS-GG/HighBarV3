@@ -47,6 +47,14 @@ NativeQueueSnapshot MakeNativeQueueSnapshot(
 bool HasNativeQueueTag(const NativeQueueSnapshot& snapshot,
 	std::uint64_t expected_revision, std::int32_t tag);
 
+// Final engine-thread fence for effects derived from an earlier queue
+// observation. The complete queue must still have the same content revision;
+// tag-bearing edits additionally require that the exact native tag survives.
+bool NativeQueueMatchesExpected(
+	const std::vector<NativeQueueEntry>& current,
+	std::uint64_t expected_revision,
+	std::optional<std::int32_t> required_tag = std::nullopt);
+
 struct VisibleFeatureSample {
 	std::uint32_t id = 0;
 	std::uint32_t def_id = 0;

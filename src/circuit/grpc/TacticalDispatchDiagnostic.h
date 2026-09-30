@@ -14,6 +14,8 @@ enum class TacticalDispatchRefusalReason {
 	kBuildFacingInvalid,
 	kBuildPositionNonFinite,
 	kBuildSiteUnavailable,
+	kQueueUnavailable,
+	kQueueChanged,
 };
 
 constexpr const char* TacticalDispatchRefusalReasonName(
@@ -33,6 +35,10 @@ constexpr const char* TacticalDispatchRefusalReasonName(
 		return "build_position_non_finite";
 	case TacticalDispatchRefusalReason::kBuildSiteUnavailable:
 		return "build_site_unavailable";
+	case TacticalDispatchRefusalReason::kQueueUnavailable:
+		return "queue_unavailable";
+	case TacticalDispatchRefusalReason::kQueueChanged:
+		return "queue_changed";
 	case TacticalDispatchRefusalReason::kUnsupportedOrInvalidArm:
 	default:
 		return "unsupported_or_invalid_arm";
