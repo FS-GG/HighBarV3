@@ -92,6 +92,17 @@ NativeQueueSnapshot MakeNativeQueueSnapshot(
 	return snapshot;
 }
 
+std::optional<std::uint32_t> ExactNativeQueueUnitTargetId(
+		const NativeQueueEntry& entry, bool unit_target_action) {
+	if (!unit_target_action || entry.params.size() != 1) return std::nullopt;
+	const float value = entry.params.front();
+	if (!std::isfinite(value) || value < 0.0f || value > 31999.0f
+			|| std::trunc(value) != value) {
+		return std::nullopt;
+	}
+	return static_cast<std::uint32_t>(value);
+}
+
 bool HasNativeQueueTag(const NativeQueueSnapshot& snapshot,
 		std::uint64_t expected_revision, std::int32_t tag) {
 	if (expected_revision == 0 || snapshot.revision != expected_revision) {

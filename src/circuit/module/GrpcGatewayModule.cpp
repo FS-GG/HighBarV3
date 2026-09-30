@@ -969,7 +969,18 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			for (const auto& command : *entries) {
 				auto* out = queue->add_entries();
 				out->set_native_tag(command.tag);
-				out->set_action(QueueAction(command.command_id));
+				const auto action = QueueAction(command.command_id);
+				out->set_action(action);
+				const bool unit_target_action =
+					action == ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD
+					|| action == ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR;
+				if (const auto target = grpc::ResolveNativeQueueUnitTarget(
+						command, unit_target_action, [&](std::uint32_t id) {
+							return live_control_state_->OwnedLifetime(id);
+						})) {
+					out->mutable_unit_target()->set_id(target->id);
+					out->mutable_unit_target()->set_lifetime(target->lifetime);
+				}
 				if (command.command_id < 0)
 					out->set_definition_id(static_cast<std::uint32_t>(-command.command_id));
 				else if (command.command_id == CMD_MOVE && command.params.size() >= 3) {

@@ -45,6 +45,32 @@ TEST(TacticalNativeState, QueueRevisionCoversOrderTagsOptionsTimeoutAndFloatBits
 	EXPECT_NE(ComputeNativeQueueRevision({first, second}), baseline.revision);
 }
 
+TEST(TacticalNativeState, QueueUnitTargetRequiresExactClassifiedEngineId) {
+	NativeQueueEntry entry{1, 25, 0, 41, 900, {17003.0f}};
+	EXPECT_EQ(ExactNativeQueueUnitTargetId(entry, true), 17003u);
+	const auto target = ResolveNativeQueueUnitTarget(
+		entry, true, [](std::uint32_t id) { return id == 17003 ? 7u : 0u; });
+	ASSERT_TRUE(target.has_value());
+	EXPECT_EQ(target->id, 17003u);
+	EXPECT_EQ(target->lifetime, 7u);
+	EXPECT_FALSE(ResolveNativeQueueUnitTarget(
+		entry, true, [](std::uint32_t) { return 0u; }).has_value());
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, false).has_value());
+
+	entry.params = {};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+	entry.params = {17003.0f, 1.0f};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+	entry.params = {17003.5f};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+	entry.params = {-1.0f};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+	entry.params = {32000.0f};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+	entry.params = {std::numeric_limits<float>::quiet_NaN()};
+	EXPECT_FALSE(ExactNativeQueueUnitTargetId(entry, true).has_value());
+}
+
 TEST(TacticalNativeState, FinalQueueFenceRequiresExactRevisionAndNativeTag) {
 	const std::vector<NativeQueueEntry> current{
 		{1, 10, 0, 41, 900, {1.0f}},

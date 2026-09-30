@@ -58,6 +58,28 @@ std::uint64_t ComputeNativeQueueRevision(
 NativeQueueSnapshot MakeNativeQueueSnapshot(
 	std::vector<NativeQueueEntry> entries);
 
+// Spring encodes Guard and Repair unit targets as one float parameter. Return
+// an id only when the caller has classified the command as a unit-targeting
+// action and the callback value is an exact id in the engine's unit-id range.
+std::optional<std::uint32_t> ExactNativeQueueUnitTargetId(
+	const NativeQueueEntry& entry, bool unit_target_action);
+
+struct NativeQueueUnitTarget {
+	std::uint32_t id = 0;
+	std::uint64_t lifetime = 0;
+};
+
+template <typename OwnedLifetime>
+std::optional<NativeQueueUnitTarget> ResolveNativeQueueUnitTarget(
+		const NativeQueueEntry& entry, bool unit_target_action,
+		OwnedLifetime&& owned_lifetime) {
+	const auto id = ExactNativeQueueUnitTargetId(entry, unit_target_action);
+	if (!id.has_value()) return std::nullopt;
+	const auto lifetime = std::forward<OwnedLifetime>(owned_lifetime)(*id);
+	if (lifetime == 0) return std::nullopt;
+	return NativeQueueUnitTarget{*id, lifetime};
+}
+
 // A tag is actionable only in the exact queue revision in which it was
 // observed. Spring tags are the mutation identity; positions are not stable.
 bool HasNativeQueueTag(const NativeQueueSnapshot& snapshot,
