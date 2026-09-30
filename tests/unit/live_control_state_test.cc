@@ -570,4 +570,48 @@ TEST(LiveControlState, RallyAdmissionRequiresExactLegacyMoveAndFreshRallyQueue) 
 	auto stale_queue=AdmitLiveCommandBatch(queue,live,"live",*state,t0);
 	EXPECT_FALSE(stale_queue.accepted()); EXPECT_EQ(stale_queue.diagnostic_reason,"tactical_fence_queue_changed");
 }
+
+TEST(LiveControlState, QueueRepeatAdmissionRequiresExactDomainOption) {
+	const auto admit=[](NativeQueueDomain domain,std::uint32_t options) {
+		auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+		Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+		const auto lifetime=state->MarkOwnedPresent(4);
+		const auto basis=state->RecordBasis(95,115,9500,1,std::chrono::milliseconds(500),t0);
+		state->RecordTacticalCatalogue("catalogue",96,true);
+		TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue");
+		snapshot.set_catalogue_revision(96);
+		auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(4);
+		actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(97);
+		actor->add_descriptors()->set_kind(NATIVE_TACTICAL_DESCRIPTOR_QUEUE_REPEAT);
+		auto* observed=actor->add_queue(); observed->set_domain(domain);
+		observed->set_revision(98); observed->set_complete(true);
+		state->RecordTacticalSnapshot(snapshot);
+
+		LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+		live.mutable_actor()->set_id(4); live.mutable_actor()->set_lifetime(lifetime);
+		live.set_semantic_action(LIVE_SEMANTIC_ACTION_QUEUE_EDIT);
+		live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500);
+		live.set_remaining_lease_validity_ms(500);
+		auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue");
+		tactical->set_catalogue_revision(96); tactical->set_actor_descriptor_revision(97);
+		tactical->set_queue_domain(domain); tactical->set_expected_queue_revision(98);
+		auto* edit=tactical->mutable_queue_edit(); edit->set_domain(domain);
+		edit->set_expected_queue_revision(98); edit->set_kind(NATIVE_QUEUE_EDIT_KIND_SET_REPEAT);
+		edit->set_repeat(true);
+		auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1);
+		batch->set_target_unit_id(4); auto* repeat=batch->add_commands()->mutable_set_repeat();
+		repeat->set_unit_id(4); repeat->set_options(options); repeat->set_repeat(true);
+		CommandQueue queue(nullptr,1);
+		return AdmitLiveCommandBatch(queue,live,"live",*state,t0);
+	};
+
+	EXPECT_TRUE(admit(NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION,64).accepted());
+	EXPECT_TRUE(admit(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER,0).accepted());
+	EXPECT_EQ(admit(NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION,0).diagnostic_reason,
+	          "live_semantic_mismatch");
+	EXPECT_EQ(admit(NATIVE_QUEUE_DOMAIN_ACTOR_ORDER,64).diagnostic_reason,
+	          "live_semantic_mismatch");
+	EXPECT_EQ(admit(NATIVE_QUEUE_DOMAIN_FACTORY_RALLY,0).diagnostic_reason,
+	          "tactical_fence_parameter_refused");
+}
 } // namespace

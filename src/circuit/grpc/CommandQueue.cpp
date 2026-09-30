@@ -290,7 +290,7 @@ CommandBatchResult AdmitLiveCommandBatch(
 			const auto domain_options = edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION ? 64u : 0u;
 			if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT) {
 				semantic_ok = cmd.command_case()==::highbar::v1::AICommand::kSetRepeat
-					&& actor_matches(cmd.set_repeat().unit_id()) && cmd.set_repeat().options()==0
+					&& actor_matches(cmd.set_repeat().unit_id()) && cmd.set_repeat().options()==domain_options
 					&& cmd.set_repeat().repeat()==edit.repeat();
 			} else if (edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG) {
 				semantic_ok = cmd.command_case()==::highbar::v1::AICommand::kCustom
