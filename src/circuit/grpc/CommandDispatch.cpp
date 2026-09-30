@@ -10,6 +10,7 @@
 #include "unit/CircuitDef.h"
 #include "unit/CircuitUnit.h"
 #include "unit/enemy/EnemyInfo.h"
+#include "task/UnitTask.h"
 
 #include "AIFloat3.h"
 #include "AIColor.h"
@@ -155,6 +156,14 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	auto position = [](const ::highbar::v1::NativePosition3& p) {
 		return springai::AIFloat3(p.x(), p.has_elevation() ? p.elevation() : 0.0f, p.z());
 	};
+	auto dispatch_under_external_control = [&](auto&& effect) {
+		auto* task = unit->GetTask();
+		const bool already_controlled = task != nullptr
+			&& task->GetType() == IUnitTask::Type::PLAYER;
+		return DispatchAfterTacticalControlFence(already_controlled,
+			[&] { return task != nullptr && ai->UnitControl(unit, false); },
+			std::forward<decltype(effect)>(effect));
+	};
 	switch (command.action_case()) {
 	case ::highbar::v1::NativeTacticalCommand::kBuild: {
 		const auto& body = command.build();
@@ -188,13 +197,14 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		if (!map->IsPossibleToBuildAt(def->GetDef(), pos, facing)) {
 			return refuse(TacticalDispatchRefusalReason::kBuildSiteUnavailable);
 		}
-		unit->CmdBuild(def, pos, facing, TacticalOptions(body.queue_policy()));
-		return true;
+		return dispatch_under_external_control([&] {
+			unit->CmdBuild(def, pos, facing, TacticalOptions(body.queue_policy()));
+		});
 	}
-	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce:{const auto& body=command.factory_produce();if(body.count()!=1)return false;auto* def=ai->GetCircuitDefSafe(body.definition_id());if(def==nullptr||!unit->GetCircuitDef()->CanBuild(def))return false;unit->CmdBuild(def,native->GetPos(),UNIT_NO_FACING,TacticalOptions(body.queue_policy()));return true;}
-	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));return true;}
-	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));return true;}
-	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit:{auto* target=friendly(command.reclaim_unit().target());if(target==nullptr||target->IsDead())return false;unit->CmdReclaimUnit(target,TacticalOptions(command.reclaim_unit().queue_policy()));return true;}
+	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce:{const auto& body=command.factory_produce();if(body.count()!=1)return false;auto* def=ai->GetCircuitDefSafe(body.definition_id());if(def==nullptr||!unit->GetCircuitDef()->CanBuild(def))return false;return dispatch_under_external_control([&]{unit->CmdBuild(def,native->GetPos(),UNIT_NO_FACING,TacticalOptions(body.queue_policy()));});}
+	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));});}
+	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));});}
+	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit:{auto* target=friendly(command.reclaim_unit().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{unit->CmdReclaimUnit(target,TacticalOptions(command.reclaim_unit().queue_policy()));});}
 	case ::highbar::v1::NativeTacticalCommand::kReclaimFeature: {
 		auto* callback = ai->GetCallback();
 		if (callback == nullptr) return false;
@@ -223,20 +233,23 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		const auto& wire = command.reclaim_feature().target();
 		const NativeFeatureReference reference{
 			wire.id(), wire.lifetime(), current.def_id, 0};
+		bool control_acquired = false;
 		const bool dispatched = selected != nullptr
 			&& DispatchCurrentFeatureReclaim(feature_lifetimes, reference, current, [&] {
-				unit->CmdReclaimFeature(selected,
-					TacticalOptions(command.reclaim_feature().queue_policy()));
+				control_acquired = dispatch_under_external_control([&] {
+					unit->CmdReclaimFeature(selected,
+						TacticalOptions(command.reclaim_feature().queue_policy()));
+				});
 			});
 		utils::free_clear(features);
-		return dispatched;
+		return dispatched && control_acquired;
 	}
-	case ::highbar::v1::NativeTacticalCommand::kReclaimArea:{const auto& body=command.reclaim_area();if(!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>kMaximumTacticalAreaRadius)return false;unit->CmdReclaimInArea(position(body.center()),body.radius_world_units(),TacticalOptions(body.queue_policy()));return true;}
-	case ::highbar::v1::NativeTacticalCommand::kSetRally:{const auto pos=position(command.set_rally().position());if(!std::isfinite(pos.x)||!std::isfinite(pos.y)||!std::isfinite(pos.z))return false;native->MoveTo(pos,0);return true;}
-	case ::highbar::v1::NativeTacticalCommand::kQueueEdit:{const auto& edit=command.queue_edit();short outer=edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION?UNIT_COMMAND_OPTION_CONTROL_KEY:0;if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG){native->ExecuteCustomCommand(CMD_REMOVE,{static_cast<float>(edit.remove_native_tag())},outer);return true;}if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT){if(edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY)return false;native->SetRepeat(edit.repeat());return true;}if(edit.kind()!=::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT||!edit.has_insert())return false;const auto& in=edit.insert();int id=0;short inserted_options=0;std::vector<float> params;
+	case ::highbar::v1::NativeTacticalCommand::kReclaimArea:{const auto& body=command.reclaim_area();if(!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>kMaximumTacticalAreaRadius)return false;return dispatch_under_external_control([&]{unit->CmdReclaimInArea(position(body.center()),body.radius_world_units(),TacticalOptions(body.queue_policy()));});}
+	case ::highbar::v1::NativeTacticalCommand::kSetRally:{const auto pos=position(command.set_rally().position());if(!std::isfinite(pos.x)||!std::isfinite(pos.y)||!std::isfinite(pos.z))return false;return dispatch_under_external_control([&]{native->MoveTo(pos,0);});}
+	case ::highbar::v1::NativeTacticalCommand::kQueueEdit:{const auto& edit=command.queue_edit();short outer=edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION?UNIT_COMMAND_OPTION_CONTROL_KEY:0;if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG){return dispatch_under_external_control([&]{native->ExecuteCustomCommand(CMD_REMOVE,{static_cast<float>(edit.remove_native_tag())},outer);});}if(edit.kind()==::highbar::v1::NATIVE_QUEUE_EDIT_KIND_SET_REPEAT){if(edit.domain()==::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY)return false;return dispatch_under_external_control([&]{native->SetRepeat(edit.repeat());});}if(edit.kind()!=::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT||!edit.has_insert())return false;const auto& in=edit.insert();int id=0;short inserted_options=0;std::vector<float> params;
 			switch(in.action()){case ::highbar::v1::LIVE_SEMANTIC_ACTION_MOVE_REPLACE:id=CMD_MOVE;if(!in.has_position())return false;params={in.position().x(),in.position().has_elevation()?in.position().elevation():0.0f,in.position().z()};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_BUILD:if(!in.has_definition_id()||!in.has_position())return false;id=-static_cast<int>(in.definition_id());params={in.position().x(),in.position().has_elevation()?in.position().elevation():0.0f,in.position().z(),static_cast<float>(UNIT_FACING_SOUTH)};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE:if(!in.has_definition_id())return false;id=-static_cast<int>(in.definition_id());break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_GUARD:id=CMD_GUARD;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_REPAIR:id=CMD_REPAIR;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;case ::highbar::v1::LIVE_SEMANTIC_ACTION_RECLAIM_UNIT:id=CMD_RECLAIM;if(!in.has_unit_target())return false;params={static_cast<float>(in.unit_target().id())};break;default:return false;}
-			std::vector<float> encoded{static_cast<float>(in.before_native_tag()),static_cast<float>(id),static_cast<float>(inserted_options)};encoded.insert(encoded.end(),params.begin(),params.end());native->ExecuteCustomCommand(CMD_INSERT,std::move(encoded),outer);return true;}
-	case ::highbar::v1::NativeTacticalCommand::kTacticalMode:{const auto& mode=command.tactical_mode();int id=mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY?34571:mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE?37382:0;if(id==0)return false;float value=mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED?1.0f:mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_DISABLED?0.0f:-1.0f;if(value<0)return false;native->ExecuteCustomCommand(id,{value});return true;}
+			std::vector<float> encoded{static_cast<float>(in.before_native_tag()),static_cast<float>(id),static_cast<float>(inserted_options)};encoded.insert(encoded.end(),params.begin(),params.end());return dispatch_under_external_control([&]{native->ExecuteCustomCommand(CMD_INSERT,std::move(encoded),outer);});}
+	case ::highbar::v1::NativeTacticalCommand::kTacticalMode:{const auto& mode=command.tactical_mode();int id=mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CONSTRUCTION_PRIORITY?34571:mode.kind()==::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_BAR_CLOAK_DESIRE?37382:0;if(id==0)return false;float value=mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_ENABLED?1.0f:mode.value()==::highbar::v1::NATIVE_TACTICAL_MODE_VALUE_DISABLED?0.0f:-1.0f;if(value<0)return false;return dispatch_under_external_control([&]{native->ExecuteCustomCommand(id,{value});});}
 	default:return false;
 	}
 }
