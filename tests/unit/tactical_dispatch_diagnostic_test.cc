@@ -22,6 +22,8 @@ TEST(TacticalDispatchDiagnosticTest, BuildPredicatesHaveDistinctBoundedLabels) {
 		R::kBuildFacingInvalid,
 		R::kBuildPositionNonFinite,
 		R::kBuildSiteUnavailable,
+		R::kQueueUnavailable,
+		R::kQueueChanged,
 	};
 	std::unordered_set<std::string_view> labels;
 	for (const auto reason : reasons) {

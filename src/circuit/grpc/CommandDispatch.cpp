@@ -25,7 +25,10 @@
 #include <Feature.h>
 #include <FeatureDef.h>
 #include <Map.h>
+#include <Command.h>
+#include <CurrentCommandByType.h>
 #include "spring/SpringCallback.h"
+#include "spring/SpringEngine.h"
 #include "spring/SpringMap.h"
 #include "util/Utils.h"
 #include "util/Defines.h"
@@ -34,6 +37,7 @@
 
 #include <climits>
 #include <exception>
+#include <optional>
 #include <string>
 
 namespace circuit::grpc {
@@ -41,6 +45,7 @@ namespace circuit::grpc {
 namespace {
 
 constexpr float kMaximumTacticalAreaRadius = 2048.0f;
+constexpr std::size_t kMaximumTacticalQueueEntries = 64;
 
 short TacticalOptions(::highbar::v1::NativeQueuePolicy policy) {
 	return policy == ::highbar::v1::NATIVE_QUEUE_POLICY_APPEND
@@ -55,6 +60,57 @@ static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_UNSP
 
 springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 	return springai::AIFloat3(v.x(), v.y(), v.z());
+}
+
+std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
+		::circuit::CCircuitAI* ai, springai::Unit* unit,
+		::highbar::v1::NativeQueueDomain domain) {
+	if (ai == nullptr || unit == nullptr) return std::nullopt;
+	auto materialize = [](auto& commands)
+			-> std::optional<std::vector<NativeQueueEntry>> {
+		if (commands.size() > kMaximumTacticalQueueEntries) {
+			utils::free_clear(commands);
+			return std::nullopt;
+		}
+		std::vector<NativeQueueEntry> entries;
+		entries.reserve(commands.size());
+		for (auto* command : commands) {
+			if (command == nullptr) {
+				utils::free_clear(commands);
+				return std::nullopt;
+			}
+			entries.push_back({command->GetType(), command->GetId(),
+				static_cast<std::uint16_t>(command->GetOptions()),
+				command->GetTag(), command->GetTimeOut(), command->GetParams()});
+		}
+		utils::free_clear(commands);
+		return entries;
+	};
+
+	try {
+		auto* engine = ai->GetEngine();
+		const bool typed_api = engine != nullptr
+			&& SupportsRallyQueueApi(engine->GetVersionHash(),
+				engine->GetVersionAdditional());
+		if (typed_api) {
+			const int queue_type =
+				domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER ? 0
+				: domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY ? 1
+				: domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION ? 2
+				: -1;
+			if (queue_type < 0) return std::nullopt;
+			auto commands = unit->GetCurrentCommandsByType(queue_type);
+			return materialize(commands);
+		}
+		if (domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY
+		    || domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_UNSPECIFIED) {
+			return std::nullopt;
+		}
+		auto commands = unit->GetCurrentCommands();
+		return materialize(commands);
+	} catch (...) {
+		return std::nullopt;
+	}
 }
 
 }  // namespace
@@ -75,6 +131,24 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		return refuse(TacticalDispatchRefusalReason::kInvalidContext);
 	}
 	auto* native = unit->GetUnit();
+	const auto current_queue = ReadCurrentTacticalQueue(ai, native, command.queue_domain());
+	if (!current_queue.has_value()) {
+		return refuse(TacticalDispatchRefusalReason::kQueueUnavailable);
+	}
+	std::optional<std::int32_t> required_tag;
+	if (command.action_case() == ::highbar::v1::NativeTacticalCommand::kQueueEdit) {
+		const auto& edit = command.queue_edit();
+		if (edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_REMOVE_TAG) {
+			required_tag = edit.remove_native_tag();
+		} else if (edit.kind() == ::highbar::v1::NATIVE_QUEUE_EDIT_KIND_INSERT
+		           && edit.has_insert()) {
+			required_tag = edit.insert().before_native_tag();
+		}
+	}
+	if (!NativeQueueMatchesExpected(
+			*current_queue, command.expected_queue_revision(), required_tag)) {
+		return refuse(TacticalDispatchRefusalReason::kQueueChanged);
+	}
 	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
 		return ai->GetTeamUnit(static_cast<ICoreUnit::Id>(ref.id()));
 	};

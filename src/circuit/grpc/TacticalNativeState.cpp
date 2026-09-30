@@ -101,6 +101,20 @@ bool HasNativeQueueTag(const NativeQueueSnapshot& snapshot,
 		[tag](const NativeQueueEntry& entry) { return entry.tag == tag; });
 }
 
+bool NativeQueueMatchesExpected(
+		const std::vector<NativeQueueEntry>& current,
+		std::uint64_t expected_revision,
+		std::optional<std::int32_t> required_tag) {
+	if (expected_revision == 0
+	    || ComputeNativeQueueRevision(current) != expected_revision) {
+		return false;
+	}
+	return !required_tag.has_value()
+		|| std::any_of(current.begin(), current.end(), [&](const auto& entry) {
+			return entry.tag == *required_tag;
+		});
+}
+
 bool FeatureLifetimeLedger::ReplaceCompleteVisibleSnapshot(
 		std::uint64_t state_sequence,
 		const std::vector<VisibleFeatureSample>& features) {
