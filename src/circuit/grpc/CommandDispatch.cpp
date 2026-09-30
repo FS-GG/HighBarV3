@@ -158,10 +158,13 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	};
 	auto dispatch_under_external_control = [&](auto&& effect) {
 		auto* task = unit->GetTask();
-		const bool already_controlled = task != nullptr
-			&& task->GetType() == IUnitTask::Type::PLAYER;
+		// A null task means Circuit has no handler for this actor, so there is
+		// no autonomous scheduler to suspend and no task manager through which
+		// UnitControl could install a player task.
+		const bool already_controlled = task == nullptr
+			|| task->GetType() == IUnitTask::Type::PLAYER;
 		return DispatchAfterTacticalControlFence(already_controlled,
-			[&] { return task != nullptr && ai->UnitControl(unit, false); },
+			[&] { return ai->UnitControl(unit, false); },
 			std::forward<decltype(effect)>(effect));
 	};
 	switch (command.action_case()) {
