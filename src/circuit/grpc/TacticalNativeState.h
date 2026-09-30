@@ -5,9 +5,25 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace circuit::grpc {
+
+// External tactical orders and Circuit's autonomous task scheduler share the
+// same Spring command queue.  The ownership transition must happen before the
+// accepted effect is emitted so a later autonomous update cannot insert an
+// order after the final queue-revision fence.
+template <typename AcquireControl, typename DispatchEffect>
+bool DispatchAfterTacticalControlFence(bool already_controlled,
+	AcquireControl&& acquire_control, DispatchEffect&& dispatch_effect) {
+	if (!already_controlled
+		&& !std::forward<AcquireControl>(acquire_control)()) {
+		return false;
+	}
+	std::forward<DispatchEffect>(dispatch_effect)();
+	return true;
+}
 
 inline constexpr const char* kRallyQueueEngineHash = "7555c83";
 inline constexpr const char* kRallyQueueEngineAdditional =

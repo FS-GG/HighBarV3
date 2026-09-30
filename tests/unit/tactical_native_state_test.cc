@@ -61,6 +61,39 @@ TEST(TacticalNativeState, FinalQueueFenceRequiresExactRevisionAndNativeTag) {
 	EXPECT_FALSE(NativeQueueMatchesExpected(changed, revision, 42));
 }
 
+TEST(TacticalNativeState, AcceptedEffectAcquiresControlBeforeDispatch) {
+	bool controlled = false;
+	bool effect_observed_control = false;
+	int acquisitions = 0;
+	EXPECT_TRUE(DispatchAfterTacticalControlFence(false, [&] {
+		++acquisitions;
+		controlled = true;
+		return true;
+	}, [&] {
+		effect_observed_control = controlled;
+	}));
+	EXPECT_EQ(acquisitions, 1);
+	EXPECT_TRUE(effect_observed_control);
+}
+
+TEST(TacticalNativeState, ExistingControlIsStableAndFailedFenceHasNoEffect) {
+	int acquisitions = 0;
+	int effects = 0;
+	EXPECT_TRUE(DispatchAfterTacticalControlFence(true, [&] {
+		++acquisitions;
+		return false;
+	}, [&] { ++effects; }));
+	EXPECT_EQ(acquisitions, 0);
+	EXPECT_EQ(effects, 1);
+
+	EXPECT_FALSE(DispatchAfterTacticalControlFence(false, [&] {
+		++acquisitions;
+		return false;
+	}, [&] { ++effects; }));
+	EXPECT_EQ(acquisitions, 1);
+	EXPECT_EQ(effects, 1);
+}
+
 TEST(TacticalNativeState, FeatureIdZeroIsPresenceSafeAndStableWhileVisible) {
 	FeatureLifetimeLedger ledger;
 	ASSERT_TRUE(ledger.ReplaceCompleteVisibleSnapshot(10, {{0, 7, 1, 2, 3}}));
