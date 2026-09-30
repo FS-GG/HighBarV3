@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/LiveControlState.h"
+#include "grpc/FactoryProductionPolicy.h"
 #include "grpc/CommandQueue.h"
 
 #include <algorithm>
@@ -296,7 +297,10 @@ LiveFenceResult LiveControlState::CheckTacticalCommandLocked(
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimFeature){const auto& ref=command.reclaim_feature().target();if(!feature_ref_ok(ref))return {false,::highbar::v1::LIVE_FENCE_FEATURE_LIFETIME_CHANGED};if(!policy_ok(command.reclaim_feature().queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kReclaimArea){const auto& body=command.reclaim_area();if(!finite_position(body.center())||!std::isfinite(body.radius_world_units())||body.radius_world_units()<=0||body.radius_world_units()>2048||!policy_ok(body.queue_policy()))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};}
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kFactoryProduce&&
-	   (command.factory_produce().count()!=1||!allowed_definition(command.factory_produce().definition_id())||!policy_ok(command.factory_produce().queue_policy())))return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
+	   (command.factory_produce().count()!=1||!allowed_definition(command.factory_produce().definition_id())||
+	    !FactoryProductionPolicyAllows(command.factory_produce().queue_policy(),
+	                                  queue->complete(), queue->entries().empty())))
+		return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};
 	if(command.action_case()==::highbar::v1::NativeTacticalCommand::kSetRally
 	    && !finite_position(command.set_rally().position()))
 		return {false,::highbar::v1::LIVE_FENCE_PARAMETER_REFUSED};

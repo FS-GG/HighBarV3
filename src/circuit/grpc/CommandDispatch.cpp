@@ -3,6 +3,7 @@
 // HighBarV3 — CommandDispatch impl (T057).
 
 #include "grpc/CommandDispatch.h"
+#include "grpc/FactoryProductionPolicy.h"
 #include "grpc/GrpcLog.h"
 #include "grpc/TacticalNativeState.h"
 
@@ -204,7 +205,18 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 			unit->CmdBuild(def, pos, facing, TacticalOptions(body.queue_policy()));
 		});
 	}
-	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce:{const auto& body=command.factory_produce();if(body.count()!=1)return false;auto* def=ai->GetCircuitDefSafe(body.definition_id());if(def==nullptr||!unit->GetCircuitDef()->CanBuild(def))return false;return dispatch_under_external_control([&]{unit->CmdBuild(def,native->GetPos(),UNIT_NO_FACING,TacticalOptions(body.queue_policy()));});}
+	case ::highbar::v1::NativeTacticalCommand::kFactoryProduce: {
+		const auto& body = command.factory_produce();
+		if (body.count() != 1) return false;
+		auto* def = ai->GetCircuitDefSafe(body.definition_id());
+		if (def == nullptr || !unit->GetCircuitDef()->CanBuild(def)) return false;
+		return DispatchFactoryProductionIfAllowed(
+			body.queue_policy(), current_queue->empty(), [&] {
+				return dispatch_under_external_control([&] {
+					unit->CmdBuild(def, native->GetPos(), UNIT_NO_FACING, 0);
+				});
+			});
+	}
 	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));});}
 	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));});}
 	case ::highbar::v1::NativeTacticalCommand::kReclaimUnit:{auto* target=friendly(command.reclaim_unit().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{unit->CmdReclaimUnit(target,TacticalOptions(command.reclaim_unit().queue_policy()));});}

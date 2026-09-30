@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/CommandQueue.h"
 #include "grpc/CommandDispatch.h"
+#include "grpc/FactoryProductionPolicy.h"
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
 
@@ -519,6 +520,88 @@ TEST(LiveControlState, TacticalAdmissionRequiresExactLegacyFacingPositionAndOpti
 	legacy->mutable_build_position()->set_x(100); legacy->set_options(0);
 	batch->set_batch_seq(sequence); batch->set_client_command_id(sequence);
 	EXPECT_FALSE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+}
+
+TEST(LiveControlState, FactoryProductionUsesPlainBuildAndRefusesNonemptyReplace) {
+	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};
+	Apply(*state,LIVE_CONTROL_DIRECTIVE_KIND_ARM,1);
+	const auto lifetime=state->MarkOwnedPresent(4);
+	const auto basis=state->RecordBasis(84,104,8400,1,std::chrono::milliseconds(500),t0);
+	state->RecordTacticalCatalogue("catalogue",85,true);
+	TacticalSnapshotMetadata snapshot; snapshot.set_catalogue_id("catalogue");
+	snapshot.set_catalogue_revision(85);
+	auto* actor=snapshot.add_actors(); actor->mutable_actor()->set_id(4);
+	actor->mutable_actor()->set_lifetime(lifetime); actor->set_descriptor_revision(86);
+	auto* descriptor=actor->add_descriptors();
+	descriptor->set_kind(NATIVE_TACTICAL_DESCRIPTOR_FACTORY_PRODUCE);
+	descriptor->add_allowed_definition_ids(42);
+	auto* observed=actor->add_queue();
+	observed->set_domain(NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION);
+	observed->set_revision(87); observed->set_complete(true);
+	observed->add_entries()->set_native_tag(1001);
+	state->RecordTacticalSnapshot(snapshot);
+
+	LiveCommandBatch live; *live.mutable_binding()=Binding(1); *live.mutable_basis()=basis;
+	live.mutable_actor()->set_id(4); live.mutable_actor()->set_lifetime(lifetime);
+	live.set_semantic_action(LIVE_SEMANTIC_ACTION_FACTORY_PRODUCE);
+	live.set_remaining_basis_validity_ms(500); live.set_remaining_command_lifetime_ms(500);
+	live.set_remaining_lease_validity_ms(500);
+	auto* tactical=live.mutable_tactical_command(); tactical->set_catalogue_id("catalogue");
+	tactical->set_catalogue_revision(85); tactical->set_actor_descriptor_revision(86);
+	tactical->set_queue_domain(NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION);
+	tactical->set_expected_queue_revision(87);
+	auto* intent=tactical->mutable_factory_produce(); intent->set_definition_id(42);
+	intent->set_count(1); intent->set_queue_policy(NATIVE_QUEUE_POLICY_APPEND);
+	auto* batch=live.mutable_batch(); batch->set_batch_seq(1); batch->set_client_command_id(1);
+	batch->set_target_unit_id(4); auto* build=batch->add_commands()->mutable_build_unit();
+	build->set_unit_id(4); build->set_to_build_unit_def_id(42); build->set_options(0);
+	CommandQueue queue(nullptr,8);
+	EXPECT_TRUE(AdmitLiveCommandBatch(queue,live,"live",*state,t0).accepted());
+
+	for (const std::uint32_t forged : {8u,32u,64u,96u}) {
+		build->set_options(forged); batch->set_batch_seq(forged+2);
+		batch->set_client_command_id(forged+2);
+		EXPECT_EQ(AdmitLiveCommandBatch(queue,live,"live",*state,t0).diagnostic_reason,
+		          "live_semantic_mismatch");
+	}
+	build->set_options(0);
+	intent->set_queue_policy(static_cast<NativeQueuePolicy>(99));
+	batch->set_batch_seq(200); batch->set_client_command_id(200);
+	EXPECT_EQ(AdmitLiveCommandBatch(queue,live,"live",*state,t0).diagnostic_reason,
+	          "live_semantic_mismatch");
+
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	EXPECT_EQ(state->CheckTacticalCommand(live).reason,LIVE_FENCE_PARAMETER_REFUSED);
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REJECT_IF_BUSY);
+	EXPECT_EQ(state->CheckTacticalCommand(live).reason,LIVE_FENCE_PARAMETER_REFUSED);
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REPLACE);
+	tactical->set_expected_queue_revision(88);
+	EXPECT_EQ(state->CheckTacticalCommand(live).reason,LIVE_FENCE_QUEUE_CHANGED);
+	tactical->set_expected_queue_revision(87);
+	snapshot.mutable_actors(0)->mutable_queue(0)->clear_entries();
+	state->RecordTacticalSnapshot(snapshot);
+	EXPECT_TRUE(state->CheckTacticalCommand(live).ok);
+	intent->set_queue_policy(NATIVE_QUEUE_POLICY_REJECT_IF_BUSY);
+	EXPECT_TRUE(state->CheckTacticalCommand(live).ok);
+}
+
+TEST(LiveControlState, FactoryProductionDispatchGateRunsNoEffectForRefusedPolicy) {
+	int effects=0;
+	auto effect=[&]{++effects; return true;};
+	EXPECT_FALSE(DispatchFactoryProductionIfAllowed(
+		NATIVE_QUEUE_POLICY_REPLACE,false,effect));
+	EXPECT_FALSE(DispatchFactoryProductionIfAllowed(
+		NATIVE_QUEUE_POLICY_REJECT_IF_BUSY,false,effect));
+	EXPECT_EQ(effects,0);
+	EXPECT_TRUE(DispatchFactoryProductionIfAllowed(
+		NATIVE_QUEUE_POLICY_APPEND,false,effect));
+	EXPECT_EQ(effects,1);
+	EXPECT_TRUE(DispatchFactoryProductionIfAllowed(
+		NATIVE_QUEUE_POLICY_REPLACE,true,effect));
+	EXPECT_EQ(effects,2);
+	EXPECT_FALSE(DispatchFactoryProductionIfAllowed(
+		static_cast<NativeQueuePolicy>(99),true,effect));
+	EXPECT_EQ(effects,2);
 }
 
 TEST(LiveControlState, NativeBuildMissingElevationUsesLiveTerrainHeight) {

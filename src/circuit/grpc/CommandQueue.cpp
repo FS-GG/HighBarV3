@@ -3,6 +3,7 @@
 // HighBarV3 — CommandQueue impl (T055).
 
 #include "grpc/CommandQueue.h"
+#include "grpc/FactoryProductionPolicy.h"
 #include "grpc/CommandDispatch.h"
 #include "grpc/Counters.h"
 #include "grpc/LiveControlState.h"
@@ -266,10 +267,12 @@ CommandBatchResult AdmitLiveCommandBatch(
 		semantic_ok = live.has_tactical_command()
 			&& live.tactical_command().action_case() == ::highbar::v1::NativeTacticalCommand::kFactoryProduce
 			&& live.tactical_command().factory_produce().count() == 1
+			&& FactoryProductionPolicyAllows(
+				live.tactical_command().factory_produce().queue_policy(), true, true)
 			&& cmd.command_case() == ::highbar::v1::AICommand::kBuildUnit
 			&& actor_matches(cmd.build_unit().unit_id())
 			&& cmd.build_unit().to_build_unit_def_id() == static_cast<std::int32_t>(live.tactical_command().factory_produce().definition_id())
-			&& cmd.build_unit().options() == policy_options(live.tactical_command().factory_produce().queue_policy());
+			&& cmd.build_unit().options() == 0;
 		break;
 	case ::highbar::v1::LIVE_SEMANTIC_ACTION_SET_RALLY:
 		semantic_ok = live.has_tactical_command()
