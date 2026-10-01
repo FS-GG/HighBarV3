@@ -1,9 +1,13 @@
 local requestPath, caseName = arg[1], arg[2]
-local file = assert(io.open(requestPath, "rb"))
-local request = file:read("*a")
-file:close()
+local request = TEST_REQUEST
+if not request then
+  local file = assert(io.open(requestPath, "rb"))
+  request = file:read("*a")
+  file:close()
+end
 
 gadget = {}
+VFS = VFS or { PackF32 = function(value) return string.pack("f", value) end }
 gadgetHandler = { IsSyncedCode = function() return true end }
 UnitDefs = { [7] = { isFactory = caseName ~= "not-factory" } }
 
@@ -15,7 +19,9 @@ end
 
 local function commands()
   if caseName == "empty" or caseName == "wrong-team" or caseName == "not-factory" then return {} end
-  if caseName == "negative-zero" then return {{id=-710,options={coded=32},tag=41,params={1,-0.0}}} end
+  if caseName == "negative-zero" then return {{id=-710,options={coded=32},tag=41,params={1,TEST_NEGATIVE_ZERO or -0.0}}} end
+  if caseName == "mantissa-low-bit" then return {{id=-710,options={coded=32},tag=41,params={1.0000001192092896}}} end
+  if caseName == "float-boundaries" then return {{id=-710,options={coded=32},tag=41,params={1.401298464324817e-45,1.1754942106924411e-38,3.4028234663852886e38}}} end
   if caseName == "nonfinite" then return {{id=-710,options={coded=32},tag=41,params={math.huge}}} end
   if caseName == "overflow65" then local out={} for i=1,65 do out[i]=command(i,0) end return out end
   if caseName == "entries64" then local out={} for i=1,64 do out[i]=command(i,0) end return out end
@@ -30,8 +36,8 @@ local function commands()
 end
 
 Spring = {
-  ValidUnitID = function(unit) return unit == 42 end,
-  GetUnitTeam = function() return caseName == "wrong-team" and 2 or 1 end,
+  ValidUnitID = function(unit) return unit == 42 or unit == 0 end,
+  GetUnitTeam = function() return (caseName == "wrong-team" or caseName == "actor0-wrong-team") and 2 or 1 end,
   GetUnitDefID = function() return 7 end,
   GetFactoryCommands = function(_, count)
     assert(caseName ~= "rally", "production getter used for rally")
@@ -45,6 +51,7 @@ Spring = {
   end,
 }
 
+rawget, rawset, rawequal = nil, nil, nil
 assert(loadfile("data/barc-stock-observer/LuaRules/Gadgets/barc_stock_queue_reader.lua"))()
 local result = gadget:RecvSkirmishAIMessage(1, request)
 if result == nil then io.write("__NIL__") else io.write(result) end

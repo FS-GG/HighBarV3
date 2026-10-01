@@ -44,6 +44,15 @@ def fields(response: bytes) -> dict[str, list[str]]:
 
 
 class StockObserverTests(unittest.TestCase):
+    def test_restricted_synced_surface_uses_packf32_and_no_wide_word_arithmetic(self):
+        source = (ROOT / "data/barc-stock-observer/LuaRules/Gadgets/barc_stock_queue_reader.lua").read_text()
+        self.assertNotIn("rawget", source)
+        self.assertNotIn("bit32", source)
+        self.assertNotIn("0x428a2f98", source)
+        self.assertNotIn("4294967296", source)
+        self.assertIn("VFS.PackF32", source)
+        self.assertIn('"428a2f98"', source)
+
     def test_contract_vectors_are_byte_exact(self):
         self.assertEqual(request(), VECTOR["production-request"]["ascii"].encode())
         self.assertEqual(run_lua(request(), "empty"), VECTOR["empty-production"]["ascii"].encode())
@@ -60,6 +69,21 @@ class StockObserverTests(unittest.TestCase):
     def test_team_and_factory_scope_are_closed(self):
         self.assertEqual(fields(run_lua(request(), "wrong-team"))["reason"], ["wrong-team"])
         self.assertEqual(fields(run_lua(request(), "not-factory"))["reason"], ["not-factory"])
+
+    def test_actor_zero_is_valid_and_still_team_scoped(self):
+        accepted = fields(run_lua(request(unit=0), "actor0"))
+        self.assertEqual(accepted["status"], ["ok"])
+        self.assertEqual(accepted["unit"], ["0"])
+        refused = fields(run_lua(request(unit=0), "actor0-wrong-team"))
+        self.assertEqual(refused["reason"], ["wrong-team"])
+        self.assertEqual(refused["unit"], ["0"])
+
+    def test_float32_bytes_preserve_low_bits_and_extremes(self):
+        low_bit = fields(run_lua(request(), "mantissa-low-bit"))["row"][0]
+        self.assertEqual(low_bit.rsplit("|", 1)[1], "3f800001")
+        boundaries = fields(run_lua(request(), "float-boundaries"))["row"][0]
+        self.assertEqual(boundaries.rsplit("|", 1)[1],
+                         "00000001,007fffff,7f7fffff")
 
     def test_entry_and_parameter_bounds_refuse_without_truncation(self):
         for case in ("overflow65", "params17", "total257"):

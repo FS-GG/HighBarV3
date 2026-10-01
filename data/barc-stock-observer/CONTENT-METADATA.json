@@ -2,10 +2,16 @@
   "schema": "barc.stock-observer-content/1",
   "bridge": "barc-stock-queue-reader-v1",
   "profile": "barc-live-tactical-stock-v1",
-  "revision": 2,
+  "revision": 3,
   "evidenceScheme": "STOCK_LUA_SUPPORTED_FIELDS_V1",
   "baseGameDependency": "Beyond All Reason test-29926-0571aa8",
   "baseGameRelease": "2025.06.19",
   "baseGameHeadlessSha256": "e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833",
-  "stockEngineSourceCommit": "2639eedac7d1fd67d793ec93ebd27f014f336a14"
+  "stockEngineSourceCommit": "2639eedac7d1fd67d793ec93ebd27f014f336a14",
+  "stockCompatibility": {
+    "actorMinimum": 0,
+    "floatEncoding": "SYNCED_VFS_PACKF32_BYTES",
+    "requestDigest": "SHA256_BYTE_LIMBS",
+    "syncedGlobals": "NO_RAW_ACCESS"
+  }
 }
