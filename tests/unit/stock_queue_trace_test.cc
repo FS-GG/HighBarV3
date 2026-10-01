@@ -6,10 +6,29 @@
 #include <cstdlib>
 #include <algorithm>
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+
+namespace {
+thread_local bool fail_next_allocation = false;
+}
+
+void* operator new(std::size_t size) {
+	if (fail_next_allocation) {
+		fail_next_allocation = false;
+		throw std::bad_alloc();
+	}
+	if (void* value = std::malloc(size)) return value;
+	throw std::bad_alloc();
+}
+
+void operator delete(void* value) noexcept { std::free(value); }
+void operator delete(void* value, std::size_t) noexcept { std::free(value); }
 
 namespace circuit::grpc {
 namespace {
@@ -56,6 +75,16 @@ StockQueueTraceRecord Record(bool final_read = false) {
 	return value;
 }
 
+bool ProcessHasOpenDescriptorFor(const std::filesystem::path& path) {
+	std::error_code error;
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", error)) {
+		const auto target = std::filesystem::read_symlink(entry.path(), error);
+		if (!error && target == path) return true;
+		error.clear();
+	}
+	return false;
+}
+
 TEST(StockQueueTrace, WritesClosedSampleAndFinalIdentityWithSignedZeroBits) {
 	char path[] = "/tmp/highbar-stock-trace-test-XXXXXX"; const int fd = ::mkstemp(path);
 	ASSERT_GE(fd, 0); auto sink = StockQueueTraceSink::CreateForTest(fd, "run-1"); ASSERT_TRUE(sink);
@@ -77,7 +106,50 @@ TEST(StockQueueTrace, PartialWritesCompleteButZeroWriteLatchesFailure) {
 	EXPECT_TRUE(partial->Record(Record())); EXPECT_FALSE(partial->failed()); partial.reset();
 	auto stopped = StockQueueTraceSink::CreateForTest(fd, "run", [](int, const void*, std::size_t) { return ssize_t{0}; });
 	EXPECT_FALSE(stopped->Record(Record())); EXPECT_TRUE(stopped->failed()); EXPECT_FALSE(stopped->Record(Record()));
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
 	::close(fd); ::unlink(path);
+}
+
+TEST(StockQueueTrace, AllocationFailureClosesDescriptorAndPermanentlyRefuses) {
+	char path[] = "/tmp/highbar-stock-trace-alloc-XXXXXX"; const int fd = ::mkstemp(path); ASSERT_GE(fd, 0);
+	auto sink = StockQueueTraceSink::CreateForTest(fd, "run"); ASSERT_TRUE(sink);
+	const auto record = Record();
+	fail_next_allocation = true;
+	EXPECT_FALSE(sink->Record(record));
+	EXPECT_TRUE(sink->failed());
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
+	EXPECT_FALSE(sink->Record(record));
+	EXPECT_EQ(sink->records_written(), 0u); EXPECT_EQ(sink->bytes_written(), 0u);
+	::unlink(path);
+}
+
+TEST(StockQueueTrace, ThrowingWriterCannotEscapeOrChangeCallerControlFlow) {
+	char path[] = "/tmp/highbar-stock-trace-throw-XXXXXX"; const int fd = ::mkstemp(path); ASSERT_GE(fd, 0);
+	auto sink = StockQueueTraceSink::CreateForTest(fd, "run",
+		[](int, const void*, std::size_t) -> ssize_t { throw std::runtime_error("write failed"); });
+	ASSERT_TRUE(sink);
+	bool synchronized_effect_reached = false;
+	const auto dispatch = [&] {
+		(void)sink->Record(Record(true));
+		synchronized_effect_reached = true;
+		return true;
+	};
+	EXPECT_TRUE(dispatch());
+	EXPECT_TRUE(synchronized_effect_reached);
+	EXPECT_TRUE(sink->failed());
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
+	EXPECT_FALSE(sink->Record(Record(true)));
+	::unlink(path);
+}
+
+TEST(StockQueueTrace, OwnedDescriptorClosesWhenSinkConstructionAllocationFails) {
+	char path[] = "/tmp/highbar-stock-trace-adopt-XXXXXX"; const int fd = ::mkstemp(path); ASSERT_GE(fd, 0);
+	std::string run = "run";
+	fail_next_allocation = true;
+	auto sink = StockQueueTraceSink::AdoptOwnedForTest(fd, std::move(run));
+	EXPECT_FALSE(sink);
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
+	::unlink(path);
 }
 
 TEST(StockQueueTrace, MissingBasisMalformedShapeAndOversizeFailClosed) {
@@ -85,6 +157,7 @@ TEST(StockQueueTrace, MissingBasisMalformedShapeAndOversizeFailClosed) {
 	auto missing = Record(); missing.basis.clear_token();
 	auto sink = StockQueueTraceSink::CreateForTest(fd, "run"); ASSERT_TRUE(sink);
 	EXPECT_FALSE(sink->Record(missing)); EXPECT_TRUE(sink->failed());
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
 	::close(fd); ::unlink(path);
 }
 
@@ -108,11 +181,13 @@ TEST(StockQueueTrace, UnavailableAndMalformedNeverRetainResponseOrMintQueue) {
 }
 
 TEST(StockQueueTrace, RecordCeilingLatchesWithoutWritingPastBound) {
-	auto sink = StockQueueTraceSink::CreateForTest(1, "run",
+	const int fd = ::open("/dev/null", O_WRONLY | O_CLOEXEC); ASSERT_GE(fd, 0);
+	auto sink = StockQueueTraceSink::CreateForTest(fd, "run",
 		[](int, const void*, std::size_t size) { return static_cast<ssize_t>(size); });
 	ASSERT_TRUE(sink);
 	for (int index = 0; index < 4096; ++index) ASSERT_TRUE(sink->Record(Record())) << index;
 	EXPECT_FALSE(sink->Record(Record())); EXPECT_TRUE(sink->failed()); EXPECT_EQ(sink->records_written(), 4096u);
+	EXPECT_EQ(::fcntl(fd, F_GETFD), -1); EXPECT_EQ(errno, EBADF);
 }
 
 TEST(StockQueueTrace, EnvironmentRequiresOwnedModeAndCreateExclusive) {
@@ -126,8 +201,10 @@ TEST(StockQueueTrace, EnvironmentRequiresOwnedModeAndCreateExclusive) {
 	EXPECT_FALSE(StockQueueTraceSink::CreateFromEnvironment());
 	::chmod(root.c_str(), 0700); auto sink = StockQueueTraceSink::CreateFromEnvironment(); ASSERT_TRUE(sink);
 	struct stat info{}; ASSERT_EQ(::stat(path.c_str(), &info), 0); EXPECT_EQ(info.st_mode & 0777, 0600); EXPECT_EQ(info.st_nlink, 1);
+	EXPECT_TRUE(ProcessHasOpenDescriptorFor(path));
 	EXPECT_FALSE(StockQueueTraceSink::CreateFromEnvironment());
-	sink.reset(); std::filesystem::remove_all(root); ::unsetenv("HIGHBAR_STOCK_QUEUE_TRACE"); ::unsetenv("HIGHBAR_STOCK_QUEUE_TRACE_RUN_ID");
+	sink.reset(); EXPECT_FALSE(ProcessHasOpenDescriptorFor(path));
+	std::filesystem::remove_all(root); ::unsetenv("HIGHBAR_STOCK_QUEUE_TRACE"); ::unsetenv("HIGHBAR_STOCK_QUEUE_TRACE_RUN_ID");
 }
 
 }  // namespace

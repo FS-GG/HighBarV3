@@ -19,6 +19,18 @@ constexpr std::size_t kMaximumTraceLineBytes = 32768;
 constexpr std::uint64_t kMaximumTraceRecords = 4096;
 constexpr std::uint64_t kMaximumTraceBytes = 16 * 1024 * 1024;
 
+class ScopedFd {
+public:
+	explicit ScopedFd(int fd = -1) noexcept : fd_(fd) {}
+	~ScopedFd() { if (fd_ >= 0) ::close(fd_); }
+	ScopedFd(const ScopedFd&) = delete;
+	ScopedFd& operator=(const ScopedFd&) = delete;
+	int get() const noexcept { return fd_; }
+	int release() noexcept { const int result = fd_; fd_ = -1; return result; }
+private:
+	int fd_;
+};
+
 bool SafeRunId(std::string_view value) {
 	if (value.empty() || value.size() > 64) return false;
 	for (const unsigned char c : value) {
@@ -244,27 +256,54 @@ std::unique_ptr<StockQueueTraceSink> StockQueueTraceSink::CreateForTest(
 	return std::unique_ptr<StockQueueTraceSink>(new StockQueueTraceSink(fd, std::move(run_id), false, std::move(writer)));
 }
 
+std::unique_ptr<StockQueueTraceSink> StockQueueTraceSink::AdoptOwned(
+		int fd, std::string run_id, WriteFunction writer) noexcept {
+	ScopedFd owned(fd);
+	if (fd < 0) return nullptr;
+	try {
+		if (!SafeRunId(run_id)) return nullptr;
+		auto result = std::unique_ptr<StockQueueTraceSink>(
+			new StockQueueTraceSink(fd, std::move(run_id), true, std::move(writer)));
+		owned.release();
+		return result;
+	} catch (...) {
+		return nullptr;
+	}
+}
+
+std::unique_ptr<StockQueueTraceSink> StockQueueTraceSink::AdoptOwnedForTest(
+		int fd, std::string run_id, WriteFunction writer) {
+	return AdoptOwned(fd, std::move(run_id), std::move(writer));
+}
+
 std::unique_ptr<StockQueueTraceSink> StockQueueTraceSink::CreateFromEnvironment() {
-	const char* path_value = std::getenv("HIGHBAR_STOCK_QUEUE_TRACE");
-	const char* run_value = std::getenv("HIGHBAR_STOCK_QUEUE_TRACE_RUN_ID");
-	if (path_value == nullptr && run_value == nullptr) return nullptr;
-	if (path_value == nullptr || run_value == nullptr || !SafeRunId(run_value)) return nullptr;
-	const std::string path(path_value); const auto slash = path.find_last_of('/');
-	if (path.empty() || path.front() != '/' || slash == std::string::npos
-		|| slash == 0 || slash + 1 == path.size()) return nullptr;
-	const std::string parent = path.substr(0, slash), name = path.substr(slash + 1);
-	if (name == "." || name == "..") return nullptr;
-	const int parent_fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-	if (parent_fd < 0) return nullptr;
-	struct stat parent_stat{};
-	if (::fstat(parent_fd, &parent_stat) != 0 || !S_ISDIR(parent_stat.st_mode)
-		|| parent_stat.st_uid != ::geteuid() || (parent_stat.st_mode & 0777) != 0700) { ::close(parent_fd); return nullptr; }
-	const int fd = ::openat(parent_fd, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_APPEND, 0600);
-	::close(parent_fd); if (fd < 0) return nullptr;
-	struct stat file_stat{};
-	if (::fstat(fd, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) || file_stat.st_nlink != 1
-		|| file_stat.st_uid != ::geteuid() || (file_stat.st_mode & 0777) != 0600) { ::close(fd); return nullptr; }
-	return std::unique_ptr<StockQueueTraceSink>(new StockQueueTraceSink(fd, run_value, true, {}));
+	try {
+		const char* path_value = std::getenv("HIGHBAR_STOCK_QUEUE_TRACE");
+		const char* run_value = std::getenv("HIGHBAR_STOCK_QUEUE_TRACE_RUN_ID");
+		if (path_value == nullptr && run_value == nullptr) return nullptr;
+		if (path_value == nullptr || run_value == nullptr || !SafeRunId(run_value)) return nullptr;
+		std::string run_id(run_value);
+		const std::string path(path_value); const auto slash = path.find_last_of('/');
+		if (path.empty() || path.front() != '/' || slash == std::string::npos
+			|| slash == 0 || slash + 1 == path.size()) return nullptr;
+		const std::string parent = path.substr(0, slash), name = path.substr(slash + 1);
+		if (name == "." || name == "..") return nullptr;
+		ScopedFd parent_fd(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+		if (parent_fd.get() < 0) return nullptr;
+		struct stat parent_stat{};
+		if (::fstat(parent_fd.get(), &parent_stat) != 0 || !S_ISDIR(parent_stat.st_mode)
+			|| parent_stat.st_uid != ::geteuid() || (parent_stat.st_mode & 0777) != 0700) return nullptr;
+		const int fd = ::openat(parent_fd.get(), name.c_str(),
+			O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_APPEND, 0600);
+		if (fd < 0) return nullptr;
+		ScopedFd file_fd(fd);
+		struct stat file_stat{};
+		if (::fstat(fd, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) || file_stat.st_nlink != 1
+			|| file_stat.st_uid != ::geteuid() || (file_stat.st_mode & 0777) != 0600) return nullptr;
+		return AdoptOwned(file_fd.release(), std::move(run_id), {});
+	} catch (...) {
+		return nullptr;
+	}
 }
 
 bool StockQueueTraceSink::WriteLine(const std::string& line) {
@@ -278,13 +317,35 @@ bool StockQueueTraceSink::WriteLine(const std::string& line) {
 	return true;
 }
 
-bool StockQueueTraceSink::Record(const StockQueueTraceRecord& record) {
+void StockQueueTraceSink::LatchFailure() noexcept {
+	failed_ = true;
+	const int descriptor = fd_;
+	fd_ = -1;
+	if (descriptor >= 0) ::close(descriptor);
+}
+
+bool StockQueueTraceSink::Record(const StockQueueTraceRecord& record) noexcept {
 	if (failed_) return false;
-	const auto line = Serialize(run_id_, records_written_ + 1, record) + "\n";
-	if (line.size() == 1 || line.size() > kMaximumTraceLineBytes
-		|| records_written_ >= kMaximumTraceRecords || bytes_written_ + line.size() > kMaximumTraceBytes
-		|| !WriteLine(line)) { failed_ = true; return false; }
-	++records_written_; bytes_written_ += line.size(); return true;
+	try {
+		auto line = Serialize(run_id_, records_written_ + 1, record);
+		if (line.empty() || line.size() >= kMaximumTraceLineBytes
+			|| records_written_ >= kMaximumTraceRecords
+			|| line.size() + 1 > kMaximumTraceBytes - bytes_written_) {
+			LatchFailure();
+			return false;
+		}
+		line.push_back('\n');
+		if (!WriteLine(line)) {
+			LatchFailure();
+			return false;
+		}
+		++records_written_;
+		bytes_written_ += line.size();
+		return true;
+	} catch (...) {
+		LatchFailure();
+		return false;
+	}
 }
 
 }  // namespace circuit::grpc

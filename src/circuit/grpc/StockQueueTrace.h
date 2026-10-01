@@ -49,8 +49,12 @@ public:
 	static std::unique_ptr<StockQueueTraceSink> CreateFromEnvironment();
 	static std::unique_ptr<StockQueueTraceSink> CreateForTest(
 		int fd, std::string run_id, WriteFunction writer = {});
+	// Exercises the same exception-safe owned-descriptor adoption used by the
+	// environment factory. The descriptor is consumed on every return path.
+	static std::unique_ptr<StockQueueTraceSink> AdoptOwnedForTest(
+		int fd, std::string run_id, WriteFunction writer = {});
 
-	bool Record(const StockQueueTraceRecord& record);
+	bool Record(const StockQueueTraceRecord& record) noexcept;
 	bool failed() const { return failed_; }
 	std::uint64_t records_written() const { return records_written_; }
 	std::uint64_t bytes_written() const { return bytes_written_; }
@@ -58,7 +62,10 @@ public:
 private:
 	StockQueueTraceSink(int fd, std::string run_id, bool owns_fd,
 		WriteFunction writer);
+	static std::unique_ptr<StockQueueTraceSink> AdoptOwned(
+		int fd, std::string run_id, WriteFunction writer) noexcept;
 	bool WriteLine(const std::string& line);
+	void LatchFailure() noexcept;
 
 	int fd_ = -1;
 	std::string run_id_;
