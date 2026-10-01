@@ -60,9 +60,84 @@
   ],
   "revisionAlgorithm": {
     "name": "barc-stock-queue-revision-sha256-u64be-v1",
-    "input": "canonical ASCII response plus profile, catalogue binding and actor lifetime envelope",
-    "projection": "first eight SHA-256 bytes as unsigned big-endian uint64",
-    "zeroRule": "map zero to one"
+    "preimageMagic": "UTF-8 bytes barc-stock-queue-revision/1 followed by one NUL byte",
+    "fieldEncoding": "ordered fields: one-byte tag, four-byte unsigned big-endian byte length, then raw value bytes; repeated row tag 14 preserves row order; the preimage is binary and has no terminator",
+    "stringEncoding": "strict UTF-8; lengths count encoded bytes",
+    "scalarEncoding": "evidence scheme, tactical revision, actor id and row count are unsigned 32-bit big-endian raw values; catalogue revision and actor lifetime are unsigned 64-bit big-endian raw values",
+    "byteEncoding": "catalogue id and game content SHA-256 are raw bytes, not hex text",
+    "rowEncoding": "tag 14 contains the canonical ASCII bridge row payload after row= and before newline; domain,id,options.coded,tag,float32params; no timeout",
+    "orderedTags": [
+      {
+        "tag": 1,
+        "field": "evidenceScheme"
+      },
+      {
+        "tag": 2,
+        "field": "profile"
+      },
+      {
+        "tag": 3,
+        "field": "revision"
+      },
+      {
+        "tag": 4,
+        "field": "catalogueId"
+      },
+      {
+        "tag": 5,
+        "field": "catalogueRevision"
+      },
+      {
+        "tag": 6,
+        "field": "engineVersion"
+      },
+      {
+        "tag": 7,
+        "field": "gameName"
+      },
+      {
+        "tag": 8,
+        "field": "gameVersion"
+      },
+      {
+        "tag": 9,
+        "field": "gameContentSha256"
+      },
+      {
+        "tag": 10,
+        "field": "actorId"
+      },
+      {
+        "tag": 11,
+        "field": "actorLifetime"
+      },
+      {
+        "tag": 12,
+        "field": "domain"
+      },
+      {
+        "tag": 13,
+        "field": "rowCount"
+      },
+      {
+        "tag": 14,
+        "field": "orderedRow",
+        "repeated": true
+      }
+    ],
+    "fixedValues": {
+      "evidenceScheme": 2,
+      "profile": "barc-live-tactical-stock-v1",
+      "revision": 2
+    },
+    "domainValues": [
+      "actor-order",
+      "production",
+      "rally"
+    ],
+    "validation": "all fixed values must match; actor id is any uint32 including zero; catalogue revision and actor lifetime are nonzero; catalogue id and content SHA-256 are exact bound bytes; every row domain equals the envelope domain; unavailable/incomplete observations mint no revision",
+    "projection": "SHA-256 over the complete binary preimage; first eight digest bytes interpreted as unsigned big-endian uint64",
+    "zeroRule": "if the projected uint64 is zero, use one"
   },
   "factoryProductionPolicies": {
     "append": "supported",

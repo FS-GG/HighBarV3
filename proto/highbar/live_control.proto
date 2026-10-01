@@ -448,9 +448,10 @@ message NativeActorTacticalMetadata {
 
 message NativeObservedQueue {
   NativeQueueDomain domain = 1;
-  // Revision covers the complete ordered native tuple
-  // (type,id,options,tag,timeout,params), even though this wire projection is
-  // normalized and never grants raw options or arbitrary custom parameters.
+  // The negotiated evidence scheme defines the revision preimage. Legacy
+  // FULL_NATIVE_TUPLE_V1 covers (type,id,options,tag,timeout,params). Stock
+  // STOCK_LUA_SUPPORTED_FIELDS_V1 covers domain,id,options.coded,tag and
+  // finite float32 params; timeout is unavailable and is never fabricated.
   uint64 revision = 2;
   repeated NativeObservedQueueEntry entries = 3;
   bool complete = 4;

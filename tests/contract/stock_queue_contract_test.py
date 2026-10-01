@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import hashlib,json,re,sys
+import hashlib,json,re,struct,sys
 from pathlib import Path
 repo=Path(__file__).resolve().parents[2]
 packet=repo/'contracts/barc-stock-queue-v1'
@@ -27,8 +27,30 @@ assert by['production-request']['sha256']==vectors['requestSha256']
 for name in ['empty-production','one-production-with-negative-zero','wrong-team-unavailable']:
     assert f'request-sha256={vectors["requestSha256"]}' in by[name]['ascii']
 assert 'row=production|-710|32|41|3f800000,80000000\n' in by['one-production-with-negative-zero']['ascii']
+revision=vectors['revisionVector'];context=revision['context']
+preimage=bytearray(b'barc-stock-queue-revision/1\0')
+def field(tag,value):
+    preimage.append(tag);preimage.extend(struct.pack('>I',len(value)));preimage.extend(value)
+field(1,struct.pack('>I',context['evidenceScheme']))
+field(2,context['profile'].encode('utf-8'))
+field(3,struct.pack('>I',context['revision']))
+field(4,bytes.fromhex(context['catalogueIdHex']))
+field(5,struct.pack('>Q',int(context['catalogueRevision'])))
+field(6,context['engineVersion'].encode('utf-8'))
+field(7,context['gameName'].encode('utf-8'))
+field(8,context['gameVersion'].encode('utf-8'))
+field(9,bytes.fromhex(context['gameContentSha256Hex']))
+field(10,struct.pack('>I',context['actorId']))
+field(11,struct.pack('>Q',int(context['actorLifetime'])))
+field(12,context['domain'].encode('ascii'))
+field(13,struct.pack('>I',len(context['rows'])))
+for row in context['rows']: field(14,row.encode('ascii'))
+digest=hashlib.sha256(preimage).digest()
+assert len(preimage)==revision['preimageByteLength'] and preimage.hex()==revision['preimageHex']
+assert digest.hex()==revision['sha256'] and str(int.from_bytes(digest[:8],'big') or 1)==revision['projectedUint64']
 proto=(repo/'proto/highbar/live_control.proto').read_text()
 assert 'NATIVE_QUEUE_EVIDENCE_SCHEME_FULL_NATIVE_TUPLE_V1 = 1;' in proto
 assert 'NATIVE_QUEUE_EVIDENCE_SCHEME_STOCK_LUA_SUPPORTED_FIELDS_V1 = 2;' in proto
 assert re.search(r'NativeQueueEvidenceScheme evidence_scheme = 6;',proto)
+assert 'timeout is unavailable and is never fabricated' in proto
 print('stock queue contract vectors: PASS')
