@@ -223,11 +223,11 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		return DispatchAfterTacticalControlAndFinalFence(already_controlled,
 			[&] { return ai->UnitControl(unit, false); },
 			[&] {
-				if (post_control_fence && !post_control_fence()) return false;
 				const auto final_queue = ReadCurrentTacticalQueue(
 					ai, native, command.queue_domain());
 				return final_queue.has_value() && matches_expected(*final_queue);
 			},
+			[&] { return !post_control_fence || post_control_fence(); },
 			std::forward<decltype(effect)>(effect));
 	};
 	switch (command.action_case()) {

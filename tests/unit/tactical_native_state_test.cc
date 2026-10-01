@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <limits>
 
 namespace {
@@ -48,22 +50,82 @@ TEST(TacticalNativeState, FinalQueueFenceRunsAfterControlAndBeforeEffect) {
 	EXPECT_TRUE(DispatchAfterTacticalControlAndFinalFence(false,
 		[&] { events.push_back(1); return true; },
 		[&] { events.push_back(2); return true; },
-		[&] { events.push_back(3); }));
-	EXPECT_EQ(events, (std::vector<int>{1, 2, 3}));
+		[&] { events.push_back(3); return true; },
+		[&] { events.push_back(4); }));
+	EXPECT_EQ(events, (std::vector<int>{1, 2, 3, 4}));
 
 	events.clear();
 	EXPECT_FALSE(DispatchAfterTacticalControlAndFinalFence(false,
 		[&] { events.push_back(1); return true; },
-		[&] { events.push_back(2); return false; },
-		[&] { events.push_back(3); }));
-	EXPECT_EQ(events, (std::vector<int>{1, 2}));
+		[&] { events.push_back(2); return true; },
+		[&] { events.push_back(3); return false; },
+		[&] { events.push_back(4); }));
+	EXPECT_EQ(events, (std::vector<int>{1, 2, 3}));
+}
+
+TEST(TacticalNativeState, ExpiryOrActorChangeDuringFinalReadPreventsEffect) {
+	using Clock = std::chrono::steady_clock;
+	for (std::size_t expiring = 0; expiring < 3; ++expiring) {
+		auto now = Clock::time_point{} + std::chrono::milliseconds(9);
+		std::array deadlines{
+			Clock::time_point{} + std::chrono::milliseconds(20),
+			Clock::time_point{} + std::chrono::milliseconds(20),
+			Clock::time_point{} + std::chrono::milliseconds(20)};
+		deadlines[expiring] = Clock::time_point{} + std::chrono::milliseconds(10);
+		bool effect = false;
+		EXPECT_FALSE(DispatchAfterTacticalControlAndFinalFence(true,
+			[] { return true; },
+			[&] { now += std::chrono::milliseconds(2); return true; },
+			[&] {
+				return now < deadlines[0] && now < deadlines[1]
+					&& now < deadlines[2];
+			},
+			[&] { effect = true; }));
+		EXPECT_FALSE(effect);
+	}
+
+	auto now = Clock::time_point{} + std::chrono::milliseconds(9);
+	const auto deadline = Clock::time_point{} + std::chrono::milliseconds(20);
+	bool actor_valid = true;
+	bool effect = false;
+	EXPECT_FALSE(DispatchAfterTacticalControlAndFinalFence(true,
+		[] { return true; },
+		[&] { actor_valid = false; return true; },
+		[&] { return now < deadline && actor_valid; },
+		[&] { effect = true; }));
+	EXPECT_FALSE(effect);
 }
 
 TEST(TacticalNativeState, StockProfileRequiresClosedReleaseTuple) {
-	EXPECT_TRUE(SupportsStockRecoilProfile("2025", "", "", ""));
-	EXPECT_FALSE(SupportsStockRecoilProfile("2025", "custom", "", ""));
-	EXPECT_FALSE(SupportsStockRecoilProfile("2026", "", "", ""));
-	EXPECT_FALSE(SupportsStockRecoilProfile(nullptr, "", "", ""));
+	auto supports = [](const char* major, const char* minor, const char* patchset,
+		const char* hash, const char* branch, const char* additional,
+		const char* normal, const char* sync, const char* full,
+		bool is_release = true) {
+		return SupportsStockRecoilProfile(major, minor, patchset, "", hash, branch,
+			additional, normal, sync, full, is_release);
+	};
+	EXPECT_TRUE(supports("2025", "06", "19", "", "", "Headless",
+		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
+	EXPECT_FALSE(supports("2025", "06", "20", "", "", "Headless",
+		"2025.06.20", "2025.06.20", "2025.06.20 (Headless)"));
+	EXPECT_FALSE(supports("2025", "06", "19", "", "", "",
+		"2025.06.19", "2025.06.19", "2025.06.19"));
+	EXPECT_FALSE(supports("2025", "06", "19", "", "", "Headless Debug",
+		"2025.06.19", "2025.06.19", "2025.06.19 (Headless Debug)"));
+	EXPECT_FALSE(supports("2025", "06", "19", "custom", "", "Headless",
+		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
+	EXPECT_FALSE(supports("2025", "06", "19", "", "", "Headless",
+		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)", false));
+	EXPECT_FALSE(supports(nullptr, "06", "19", "", "", "Headless",
+		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
+}
+
+TEST(TacticalNativeState, BuildDefinitionProjectionCoversSignedMinimum) {
+	EXPECT_EQ(NativeBuildDefinitionId(-1), 1u);
+	EXPECT_EQ(NativeBuildDefinitionId(std::numeric_limits<std::int32_t>::min()),
+		2147483648u);
+	EXPECT_FALSE(NativeBuildDefinitionId(0).has_value());
+	EXPECT_FALSE(NativeBuildDefinitionId(1).has_value());
 }
 
 StockQueueRevisionContext GoldenStockContext() {

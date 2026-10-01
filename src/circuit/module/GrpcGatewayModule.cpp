@@ -594,8 +594,12 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	auto* configured_engine = circuit->GetEngine();
 	tactical_profile_available_ = configured_engine != nullptr
 		&& grpc::SupportsStockRecoilProfile(configured_engine->GetVersionMajor(),
-			configured_engine->GetVersionHash(), configured_engine->GetVersionBranch(),
-			configured_engine->GetVersionAdditional());
+			configured_engine->GetVersionMinor(), configured_engine->GetVersionPatchset(),
+			configured_engine->GetVersionCommits(), configured_engine->GetVersionHash(),
+			configured_engine->GetVersionBranch(),
+			configured_engine->GetVersionAdditional(), configured_engine->GetVersionNormal(),
+			configured_engine->GetVersionSync(), configured_engine->GetVersionFull(),
+			configured_engine->IsVersionRelease());
 #endif
 	auto* tactical = tactical_profile_available_
 		? capabilities.mutable_tactical() : nullptr;
@@ -1077,9 +1081,10 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 					out->mutable_unit_target()->set_id(target->id);
 					out->mutable_unit_target()->set_lifetime(target->lifetime);
 				}
-				if (command.command_id < 0)
-					out->set_definition_id(static_cast<std::uint32_t>(-command.command_id));
-				else if (command.command_id == CMD_MOVE && command.params.size() >= 3) {
+				if (const auto definition_id =
+						grpc::NativeBuildDefinitionId(command.command_id)) {
+					out->set_definition_id(*definition_id);
+				} else if (command.command_id == CMD_MOVE && command.params.size() >= 3) {
 					out->set_world_x(command.params[0]);
 					out->set_world_z(command.params[2]);
 				}
@@ -2237,7 +2242,9 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 			grpc::LiveFenceResult guarded{true, ::highbar::v1::LIVE_FENCE_REASON_UNSPECIFIED};
 			bool dispatched = false;
 			if (entry.live) {
-				guarded = live_control_state_ ? live_control_state_->DispatchGuarded(entry, [&] {
+				guarded = live_control_state_
+					? live_control_state_->DispatchGuardedWithLockedState(entry,
+					[&](const grpc::LiveControlState::LockedDispatchState& locked_state) {
 					auto* fresh_actor = circuit->GetTeamUnit(static_cast<ICoreUnit::Id>(entry.live_actor.id()));
 					if (fresh_actor == nullptr || fresh_actor->IsDead()) {
 						AppendCoordinatorTrace("live dispatch refused reason=actor_missing_or_dead");
@@ -2296,7 +2303,7 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 						auto* current = circuit->GetTeamUnit(
 							static_cast<ICoreUnit::Id>(entry.live_actor.id()));
 						return current == fresh_actor && !fresh_actor->IsDead()
-							&& live_control_state_->OwnedLifetime(entry.live_actor.id())
+							&& locked_state.OwnedLifetime(entry.live_actor.id())
 								== entry.live_actor.lifetime();
 					};
 					const bool applied = entry.live_tactical_command

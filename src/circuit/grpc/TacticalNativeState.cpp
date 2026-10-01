@@ -212,11 +212,30 @@ bool SupportsRallyQueueApi(const char* hash, const char* additional) {
 		&& std::strcmp(additional, kRallyQueueEngineAdditional) == 0;
 }
 
-bool SupportsStockRecoilProfile(const char* major, const char* hash,
-		const char* branch, const char* additional) {
-	return major != nullptr && hash != nullptr && branch != nullptr
-		&& additional != nullptr && std::strcmp(major, "2025") == 0
-		&& hash[0] == '\0' && branch[0] == '\0' && additional[0] == '\0';
+bool SupportsStockRecoilProfile(const char* major, const char* minor,
+		const char* patchset, const char* commits, const char* hash, const char* branch,
+		const char* additional, const char* normal, const char* sync,
+		const char* full, bool is_release) {
+	return major != nullptr && minor != nullptr && patchset != nullptr
+		&& commits != nullptr && hash != nullptr && branch != nullptr
+		&& additional != nullptr
+		&& normal != nullptr && sync != nullptr && full != nullptr
+		&& is_release
+		&& std::strcmp(major, "2025") == 0
+		&& std::strcmp(minor, "06") == 0
+		&& std::strcmp(patchset, "19") == 0
+		&& commits[0] == '\0' && hash[0] == '\0' && branch[0] == '\0'
+		&& std::strcmp(additional, "Headless") == 0
+		&& std::strcmp(normal, "2025.06.19") == 0
+		&& std::strcmp(sync, "2025.06.19") == 0
+		&& std::strcmp(full, "2025.06.19 (Headless)") == 0;
+}
+
+std::optional<std::uint32_t> NativeBuildDefinitionId(
+		std::int32_t command_id) {
+	if (command_id >= 0) return std::nullopt;
+	return static_cast<std::uint32_t>(-
+		static_cast<std::int64_t>(command_id));
 }
 
 FeatureLifetimeLedger::Entry* FeatureLifetimeLedger::Find(std::uint32_t id) {

@@ -57,6 +57,6 @@ fi
   -DHIGHBAR_BUILD_TESTS=ON
 
 ninja -C "${build_dir}" -j"${jobs}" \
-  BARb stock_queue_reader_test tactical_native_state_test
+  BARb live_control_state_test stock_queue_reader_test tactical_native_state_test
 ctest --test-dir "${build_dir}" --output-on-failure \
-  -R '^(stock_queue_reader_test|tactical_native_state_test)$'
+  -R '^(live_control_state_test|stock_queue_reader_test|tactical_native_state_test)$'

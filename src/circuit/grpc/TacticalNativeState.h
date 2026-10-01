@@ -94,15 +94,18 @@ bool DispatchAfterTacticalControlFence(bool already_controlled,
 // Stock queue evidence must be read again after Circuit has yielded control.
 // Keep that final fence between control acquisition and the effect so a stale
 // observation can never become an accepted command.
-template <typename AcquireControl, typename FinalFence, typename DispatchEffect>
+template <typename AcquireControl, typename FinalRead, typename PostReadFence,
+		typename DispatchEffect>
 bool DispatchAfterTacticalControlAndFinalFence(bool already_controlled,
-		AcquireControl&& acquire_control, FinalFence&& final_fence,
+		AcquireControl&& acquire_control, FinalRead&& final_read,
+		PostReadFence&& post_read_fence,
 		DispatchEffect&& dispatch_effect) {
 	if (!already_controlled
 		&& !std::forward<AcquireControl>(acquire_control)()) {
 		return false;
 	}
-	if (!std::forward<FinalFence>(final_fence)()) return false;
+	if (!std::forward<FinalRead>(final_read)()) return false;
+	if (!std::forward<PostReadFence>(post_read_fence)()) return false;
 	std::forward<DispatchEffect>(dispatch_effect)();
 	return true;
 }
@@ -121,8 +124,10 @@ bool SupportsRallyQueueApi(const char* hash, const char* additional);
 // closed tuple prevents a custom/development artifact from negotiating the
 // stock profile; the external artifact packet additionally binds the full
 // executable SHA-256 because the callback ABI does not expose it.
-bool SupportsStockRecoilProfile(const char* major, const char* hash,
-	const char* branch, const char* additional);
+bool SupportsStockRecoilProfile(const char* major, const char* minor,
+	const char* patchset, const char* commits, const char* hash, const char* branch,
+	const char* additional, const char* normal, const char* sync,
+	const char* full, bool is_release);
 
 // Engine-neutral projections of the Spring command and feature callbacks.
 // Keeping these types independent of protobuf lets the engine thread take one
@@ -152,6 +157,11 @@ NativeQueueSnapshot MakeNativeQueueSnapshot(
 // action and the callback value is an exact id in the engine's unit-id range.
 std::optional<std::uint32_t> ExactNativeQueueUnitTargetId(
 	const NativeQueueEntry& entry, bool unit_target_action);
+
+// Spring build commands encode the definition as a negative signed id. Widen
+// before taking the magnitude so the full accepted int32 bridge range,
+// including INT32_MIN, has defined behavior.
+std::optional<std::uint32_t> NativeBuildDefinitionId(std::int32_t command_id);
 
 struct NativeQueueUnitTarget {
 	std::uint32_t id = 0;
