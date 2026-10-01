@@ -23,6 +23,7 @@
 #include "grpc/TacticalDispatchDiagnostic.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 
 namespace circuit {
@@ -34,6 +35,7 @@ class CEnemyInfo;
 namespace circuit::grpc {
 
 class FeatureLifetimeLedger;
+struct StockQueueRevisionContext;
 
 constexpr int EngineFacingForNativeBuild(
 		::highbar::v1::NativeBuildFacing facing) {
@@ -109,9 +111,11 @@ bool DispatchCommand(::circuit::CCircuitAI* ai,
 // `refusal_reason` is meaningful only when dispatch returns false.  It feeds
 // the existing opt-in coordinator trace with a fixed, payload-free reason label.
 bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
-	::circuit::CCircuitUnit* unit,
-	const ::highbar::v1::NativeTacticalCommand& command,
-	const FeatureLifetimeLedger* feature_lifetimes,
-	TacticalDispatchRefusalReason* refusal_reason = nullptr);
+		::circuit::CCircuitUnit* unit,
+		const ::highbar::v1::NativeTacticalCommand& command,
+		const FeatureLifetimeLedger* feature_lifetimes,
+		const StockQueueRevisionContext* stock_queue_context,
+		const std::function<bool()>& post_control_fence,
+		TacticalDispatchRefusalReason* refusal_reason = nullptr);
 
 }  // namespace circuit::grpc

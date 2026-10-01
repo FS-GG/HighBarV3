@@ -5,6 +5,7 @@
 #include "grpc/CommandDispatch.h"
 #include "grpc/FactoryProductionPolicy.h"
 #include "grpc/GrpcLog.h"
+#include "grpc/StockQueueReader.h"
 #include "grpc/TacticalNativeState.h"
 
 #include "CircuitAI.h"
@@ -28,7 +29,9 @@
 #include <FeatureDef.h>
 #include <Map.h>
 #include <Command.h>
+#ifndef HIGHBAR_STOCK_RECOIL
 #include <CurrentCommandByType.h>
+#endif
 #include "spring/SpringCallback.h"
 #include "spring/SpringEngine.h"
 #include "spring/SpringMap.h"
@@ -38,6 +41,7 @@
 #include "Sim/Units/CommandAI/Command.h"
 
 #include <climits>
+#include <algorithm>
 #include <exception>
 #include <optional>
 #include <string>
@@ -68,6 +72,31 @@ std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
 		::circuit::CCircuitAI* ai, springai::Unit* unit,
 		::highbar::v1::NativeQueueDomain domain) {
 	if (ai == nullptr || unit == nullptr) return std::nullopt;
+#ifdef HIGHBAR_STOCK_RECOIL
+	if (domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
+		|| domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY) {
+		auto* lua = ai->GetLua();
+		if (lua == nullptr) return std::nullopt;
+		const auto stock_domain =
+			domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
+			? StockQueueDomain::Production : StockQueueDomain::Rally;
+		const auto read = ReadStockQueue(stock_domain, unit->GetUnitId(),
+			[&](const char* data, std::size_t size) {
+				return lua->CallRules(data, static_cast<int>(size));
+			});
+		if (read.status != StockQueueReadStatus::Complete) return std::nullopt;
+		std::vector<NativeQueueEntry> entries;
+		entries.reserve(read.entries.size());
+		for (const auto& entry : read.entries) {
+			entries.push_back({0, entry.command_id, entry.options,
+				entry.tag, 0, entry.params});
+		}
+		return entries;
+	}
+	if (domain != ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER) {
+		return std::nullopt;
+	}
+#endif
 	auto materialize = [](auto& commands)
 			-> std::optional<std::vector<NativeQueueEntry>> {
 		if (commands.size() > kMaximumTacticalQueueEntries) {
@@ -83,13 +112,20 @@ std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
 			}
 			entries.push_back({command->GetType(), command->GetId(),
 				static_cast<std::uint16_t>(command->GetOptions()),
-				command->GetTag(), command->GetTimeOut(), command->GetParams()});
+				command->GetTag(),
+#ifdef HIGHBAR_STOCK_RECOIL
+				0,
+#else
+				command->GetTimeOut(),
+#endif
+				command->GetParams()});
 		}
 		utils::free_clear(commands);
 		return entries;
 	};
 
 	try {
+	#ifndef HIGHBAR_STOCK_RECOIL
 		auto* engine = ai->GetEngine();
 		const bool typed_api = engine != nullptr
 			&& SupportsRallyQueueApi(engine->GetVersionHash(),
@@ -104,6 +140,7 @@ std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
 			auto commands = unit->GetCurrentCommandsByType(queue_type);
 			return materialize(commands);
 		}
+	#endif
 		if (domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY
 		    || domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_UNSPECIFIED) {
 			return std::nullopt;
@@ -121,6 +158,8 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		::circuit::CCircuitUnit* unit,
 		const ::highbar::v1::NativeTacticalCommand& command,
 		const FeatureLifetimeLedger* feature_lifetimes,
+		const StockQueueRevisionContext* stock_queue_context,
+		const std::function<bool()>& post_control_fence,
 		TacticalDispatchRefusalReason* refusal_reason) {
 	auto refuse = [&](TacticalDispatchRefusalReason reason) {
 		if (refusal_reason != nullptr) *refusal_reason = reason;
@@ -147,8 +186,25 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 			required_tag = edit.insert().before_native_tag();
 		}
 	}
-	if (!NativeQueueMatchesExpected(
-			*current_queue, command.expected_queue_revision(), required_tag)) {
+	auto matches_expected = [&](const std::vector<NativeQueueEntry>& queue) {
+#ifdef HIGHBAR_STOCK_RECOIL
+		if (stock_queue_context == nullptr) return false;
+		std::vector<StockQueueEntry> stock;
+		stock.reserve(queue.size());
+		for (const auto& entry : queue) {
+			stock.push_back({entry.command_id, entry.options, entry.tag, entry.params});
+		}
+		if (ComputeStockQueueRevision(*stock_queue_context, stock)
+			!= command.expected_queue_revision()) return false;
+		return !required_tag.has_value()
+			|| std::any_of(stock.begin(), stock.end(), [&](const auto& entry) {
+				return entry.tag == *required_tag;
+			});
+#else
+		return NativeQueueMatchesExpected(queue,command.expected_queue_revision(),required_tag);
+#endif
+	};
+	if (!matches_expected(*current_queue)) {
 		return refuse(TacticalDispatchRefusalReason::kQueueChanged);
 	}
 	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
@@ -164,8 +220,14 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		// UnitControl could install a player task.
 		const bool already_controlled = task == nullptr
 			|| task->GetType() == IUnitTask::Type::PLAYER;
-		return DispatchAfterTacticalControlFence(already_controlled,
+		return DispatchAfterTacticalControlAndFinalFence(already_controlled,
 			[&] { return ai->UnitControl(unit, false); },
+			[&] {
+				if (post_control_fence && !post_control_fence()) return false;
+				const auto final_queue = ReadCurrentTacticalQueue(
+					ai, native, command.queue_domain());
+				return final_queue.has_value() && matches_expected(*final_queue);
+			},
 			std::forward<decltype(effect)>(effect));
 	};
 	switch (command.action_case()) {
@@ -210,12 +272,28 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		if (body.count() != 1) return false;
 		auto* def = ai->GetCircuitDefSafe(body.definition_id());
 		if (def == nullptr || !unit->GetCircuitDef()->CanBuild(def)) return false;
+#ifdef HIGHBAR_STOCK_RECOIL
+		const auto policy =
+			body.queue_policy() == ::highbar::v1::NATIVE_QUEUE_POLICY_APPEND
+			? StockFactoryQueuePolicy::Append
+			: body.queue_policy() == ::highbar::v1::NATIVE_QUEUE_POLICY_REJECT_IF_BUSY
+			? StockFactoryQueuePolicy::RejectIfBusy
+			: StockFactoryQueuePolicy::Replace;
+		if (!StockFactoryProductionPolicyAllows(policy, current_queue->empty())) {
+			return false;
+		}
+		return dispatch_under_external_control([&] {
+			unit->CmdBuild(def, native->GetPos(), UNIT_NO_FACING,
+				TacticalOptions(body.queue_policy()));
+		});
+#else
 		return DispatchFactoryProductionIfAllowed(
 			body.queue_policy(), current_queue->empty(), [&] {
 				return dispatch_under_external_control([&] {
 					unit->CmdBuild(def, native->GetPos(), UNIT_NO_FACING, 0);
 				});
 			});
+#endif
 	}
 	case ::highbar::v1::NativeTacticalCommand::kGuard:{auto* target=friendly(command.guard().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{native->Guard(target->GetUnit(),TacticalOptions(command.guard().queue_policy()));});}
 	case ::highbar::v1::NativeTacticalCommand::kRepair:{auto* target=friendly(command.repair().target());if(target==nullptr||target->IsDead())return false;return dispatch_under_external_control([&]{unit->CmdRepair(target,TacticalOptions(command.repair().queue_policy()));});}

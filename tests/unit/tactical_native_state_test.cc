@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 
 namespace {
@@ -40,6 +41,57 @@ TEST(TacticalNativeState, StockFactoryReplaceNeverAliasesAppend) {
 		StockFactoryQueuePolicy::Replace, false));
 	EXPECT_FALSE(StockFactoryProductionPolicyAllows(
 		StockFactoryQueuePolicy::Replace, true));
+}
+
+TEST(TacticalNativeState, FinalQueueFenceRunsAfterControlAndBeforeEffect) {
+	std::vector<int> events;
+	EXPECT_TRUE(DispatchAfterTacticalControlAndFinalFence(false,
+		[&] { events.push_back(1); return true; },
+		[&] { events.push_back(2); return true; },
+		[&] { events.push_back(3); }));
+	EXPECT_EQ(events, (std::vector<int>{1, 2, 3}));
+
+	events.clear();
+	EXPECT_FALSE(DispatchAfterTacticalControlAndFinalFence(false,
+		[&] { events.push_back(1); return true; },
+		[&] { events.push_back(2); return false; },
+		[&] { events.push_back(3); }));
+	EXPECT_EQ(events, (std::vector<int>{1, 2}));
+}
+
+TEST(TacticalNativeState, StockProfileRequiresClosedReleaseTuple) {
+	EXPECT_TRUE(SupportsStockRecoilProfile("2025", "", "", ""));
+	EXPECT_FALSE(SupportsStockRecoilProfile("2025", "custom", "", ""));
+	EXPECT_FALSE(SupportsStockRecoilProfile("2026", "", "", ""));
+	EXPECT_FALSE(SupportsStockRecoilProfile(nullptr, "", "", ""));
+}
+
+StockQueueRevisionContext GoldenStockContext() {
+	StockQueueRevisionContext context;
+	context.profile=kStockTacticalProfile;context.revision=kStockTacticalRevision;
+	context.evidence_scheme=QueueEvidenceScheme::StockLuaSupportedFieldsV1;
+	for(int value=0;value<16;++value)context.catalogue_id.push_back(static_cast<char>(value));
+	context.catalogue_revision=9007199254741107ULL;context.engine_version="2025.06.19";
+	context.game_name="BAR";context.game_version="test-29926-0571aa8";
+	for(int value=0;value<32;++value)context.game_content_sha256.push_back(static_cast<char>(value));
+	context.actor_id=42;context.actor_lifetime=9007199254741105ULL;context.domain="production";
+	return context;
+}
+
+TEST(TacticalNativeState, StockRevisionMatchesFrozenGoldenAndEveryBinding) {
+	const std::vector<StockQueueEntry> rows{{-710,32,41,{1.0f,-0.0f}}};
+	const auto context=GoldenStockContext();const auto preimage=BuildStockQueueRevisionPreimage(context,rows);
+	EXPECT_EQ(preimage.size(),285u);
+	EXPECT_EQ(Sha256Hex(preimage),"fbd1b79418f394d4e8a8e847c155d43c65e071b76375f9682266453933302c37");
+	EXPECT_EQ(ComputeStockQueueRevision(context,rows),18145486220354098388ULL);
+	auto changed=context;changed.actor_lifetime++;EXPECT_NE(ComputeStockQueueRevision(changed,rows),ComputeStockQueueRevision(context,rows));
+	changed=context;changed.catalogue_id[0]^=1;EXPECT_NE(ComputeStockQueueRevision(changed,rows),ComputeStockQueueRevision(context,rows));
+	changed=context;changed.game_content_sha256[0]^=1;EXPECT_NE(ComputeStockQueueRevision(changed,rows),ComputeStockQueueRevision(context,rows));
+	changed=context;changed.domain="rally";EXPECT_NE(ComputeStockQueueRevision(changed,rows),ComputeStockQueueRevision(context,rows));
+	changed=context;changed.profile=kFullTupleTacticalProfile;EXPECT_EQ(ComputeStockQueueRevision(changed,rows),0u);
+	changed=context;changed.evidence_scheme=QueueEvidenceScheme::FullNativeTupleV1;EXPECT_EQ(ComputeStockQueueRevision(changed,rows),0u);
+	auto reordered=rows;reordered.push_back({-711,0,42,{}});std::reverse(reordered.begin(),reordered.end());
+	EXPECT_NE(ComputeStockQueueRevision(context,reordered),ComputeStockQueueRevision(context,rows));
 }
 
 TEST(TacticalNativeState, RallyQueueApiRequiresExactPreexistingVersionIdentity) {

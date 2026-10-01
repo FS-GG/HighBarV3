@@ -18,6 +18,7 @@
 #include "grpc/HighBarService.h"
 #include "grpc/GrpcLog.h"
 #include "grpc/RingBuffer.h"
+#include "grpc/StockQueueReader.h"
 #include "grpc/OrderStateTracker.h"
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
@@ -45,7 +46,9 @@
 #include <Lua.h>
 #include <Resource.h>
 #include <Unit.h>
+#ifndef HIGHBAR_STOCK_RECOIL
 #include <CurrentCommandByType.h>
+#endif
 #include <UnitDef.h>
 #include <Feature.h>
 #include <FeatureDef.h>
@@ -586,17 +589,28 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	capabilities.set_terrain_elevation_available(false);
 	capabilities.set_supports_stop(true); capabilities.set_supports_move(true);
 	capabilities.set_supports_attack_visible_unit(true); capabilities.set_max_reported_units(live_max_reported_units_);
-	auto* tactical = capabilities.mutable_tactical();
-	tactical->set_profile(grpc::kFullTupleTacticalProfile);
-	tactical->set_revision(grpc::kFullTupleTacticalRevision);
-	tactical->set_max_catalogue_entries(kTacticalMaxCatalogueEntries);
-	tactical->set_max_catalogue_page_entries(kTacticalPageEntries);
-	tactical->set_max_build_options_per_actor(kTacticalMaxBuildOptions);
-	tactical->set_max_queue_entries_per_actor(kTacticalMaxQueueEntries);
-	tactical->set_max_feature_references(grpc::kTacticalFeatureCapacity);
-	tactical->set_max_factory_production_count(1);
-	tactical->set_max_area_radius_world_units(kTacticalMaxAreaRadius);
-	tactical->set_max_command_descriptors_per_actor(kTacticalMaxDescriptors);
+	tactical_profile_available_ = true;
+#ifdef HIGHBAR_STOCK_RECOIL
+	auto* configured_engine = circuit->GetEngine();
+	tactical_profile_available_ = configured_engine != nullptr
+		&& grpc::SupportsStockRecoilProfile(configured_engine->GetVersionMajor(),
+			configured_engine->GetVersionHash(), configured_engine->GetVersionBranch(),
+			configured_engine->GetVersionAdditional());
+#endif
+	auto* tactical = tactical_profile_available_
+		? capabilities.mutable_tactical() : nullptr;
+	if (tactical != nullptr) {
+		tactical->set_profile(grpc::kConfiguredTacticalProfile);
+		tactical->set_revision(grpc::kConfiguredTacticalRevision);
+		tactical->set_max_catalogue_entries(kTacticalMaxCatalogueEntries);
+		tactical->set_max_catalogue_page_entries(kTacticalPageEntries);
+		tactical->set_max_build_options_per_actor(kTacticalMaxBuildOptions);
+		tactical->set_max_queue_entries_per_actor(kTacticalMaxQueueEntries);
+		tactical->set_max_feature_references(grpc::kTacticalFeatureCapacity);
+		tactical->set_max_factory_production_count(1);
+		tactical->set_max_area_radius_world_units(kTacticalMaxAreaRadius);
+		tactical->set_max_command_descriptors_per_actor(kTacticalMaxDescriptors);
+	}
 	AppendCoordinatorTrace(
 		"live capabilities report match_bytes=" + std::to_string(live_control_state_->MatchIncarnation().size())
 		+ " actors=" + std::to_string(capabilities.max_actor_count())
@@ -615,6 +629,7 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 }
 
 void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
+	if (!tactical_profile_available_) return;
 	if (!coordinator_client_) {
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::SourceUnavailable,
 			grpc::TacticalSuppressionSource::CoordinatorClient, 0, 1});
@@ -693,6 +708,9 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 	append_identity(grpc::kEngineReleaseId); append_identity(game_name); append_identity(game_version);
 	for (const auto& definition : native) content_seed += definition.SerializeAsString();
 	const std::string content_hash = Sha256(content_seed);
+	tactical_game_name_ = game_name;
+	tactical_game_version_ = game_version;
+	tactical_game_content_sha256_ = content_hash;
 	tactical_catalogue_id_ = content_hash.substr(0, 16);
 	tactical_catalogue_revision_ = StableRevision(content_hash + content_seed);
 	tactical_catalogue_complete_ = catalogue_valid && !native.empty();
@@ -710,8 +728,8 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 	const std::size_t page_count = std::max<std::size_t>(1, (native.size()+kTacticalPageEntries-1)/kTacticalPageEntries);
 	for (std::size_t page_index=0; page_index<page_count; ++page_index) {
 		::highbar::v1::TacticalCataloguePage page;
-		page.set_tactical_profile(grpc::kFullTupleTacticalProfile);
-		page.set_tactical_revision(grpc::kFullTupleTacticalRevision);
+		page.set_tactical_profile(grpc::kConfiguredTacticalProfile);
+		page.set_tactical_revision(grpc::kConfiguredTacticalRevision);
 		page.mutable_content()->set_engine_version(grpc::kEngineReleaseId);
 		page.mutable_content()->set_game_name(game_name); page.mutable_content()->set_game_version(game_version);
 		page.mutable_content()->set_game_content_sha256(content_hash);
@@ -727,7 +745,7 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 
 void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		const ::highbar::v1::NativeObservationBasis& basis) {
-	if (!tactical_catalogue_complete_) {
+	if (!tactical_profile_available_ || !tactical_catalogue_complete_) {
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::CatalogueIncomplete,
 			grpc::TacticalSuppressionSource::None, 0, 1});
 		return;
@@ -759,10 +777,12 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	}
 	// Both calls below predate the appended rally callbacks. Do not read
 	// an appended callback-table field until this exact identity is established.
+#ifndef HIGHBAR_STOCK_RECOIL
 	auto* engine = circuit->GetEngine();
 	const bool rally_api_available = engine != nullptr
 		&& grpc::SupportsRallyQueueApi(engine->GetVersionHash(),
 			engine->GetVersionAdditional());
+#endif
 	auto* economy_manager = circuit->GetEconomyManager();
 	std::unique_ptr<springai::Economy> economy(callback->GetEconomy());
 	auto* econ = snapshot.mutable_economy();
@@ -889,6 +909,28 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		std::optional<std::vector<grpc::NativeQueueEntry>> ordinary_entries;
 		std::optional<std::vector<grpc::NativeQueueEntry>> production_entries;
 		std::optional<std::vector<grpc::NativeQueueEntry>> rally_entries;
+#ifdef HIGHBAR_STOCK_RECOIL
+		auto read_stock_bridge = [&](grpc::StockQueueDomain domain)
+				-> std::optional<std::vector<grpc::NativeQueueEntry>> {
+			auto* lua = circuit->GetLua();
+			if (lua == nullptr) return std::nullopt;
+			const auto read = grpc::ReadStockQueue(domain,
+				static_cast<std::int32_t>(unit_id),
+				[&](const char* data, std::size_t size) {
+					return lua->CallRules(data, static_cast<int>(size));
+				});
+			if (read.status != grpc::StockQueueReadStatus::Complete) {
+				return std::nullopt;
+			}
+			std::vector<grpc::NativeQueueEntry> result;
+			result.reserve(read.entries.size());
+			for (const auto& entry : read.entries) {
+				result.push_back({0, entry.command_id, entry.options,
+					entry.tag, 0, entry.params});
+			}
+			return result;
+		};
+#else
 		auto read_typed_queue = [&](int queue_type)
 				-> std::optional<std::vector<grpc::NativeQueueEntry>> {
 			if (!rally_api_available) return std::nullopt;
@@ -918,6 +960,28 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 				return std::nullopt;
 			}
 		};
+#endif
+#ifdef HIGHBAR_STOCK_RECOIL
+		if (factory) {
+			production_entries = read_stock_bridge(grpc::StockQueueDomain::Production);
+			rally_entries = read_stock_bridge(grpc::StockQueueDomain::Rally);
+		} else {
+			auto commands = unit->GetCurrentCommands();
+			if (commands.size() <= kTacticalMaxQueueEntries) {
+				std::vector<grpc::NativeQueueEntry> entries;
+				entries.reserve(commands.size());
+				bool valid = true;
+				for (auto* command : commands) {
+					if (command == nullptr) { valid = false; break; }
+					entries.push_back({command->GetType(), command->GetId(),
+						static_cast<std::uint16_t>(command->GetOptions()),
+						command->GetTag(), 0, command->GetParams()});
+				}
+				if (valid) ordinary_entries = std::move(entries);
+			}
+			utils::free_clear(commands);
+		}
+#else
 		if (rally_api_available) {
 			if (factory) {
 				production_entries = read_typed_queue(2);
@@ -942,6 +1006,7 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			}
 			utils::free_clear(commands);
 		}
+#endif
 		if (factory && rally_entries.has_value()) {
 			auto* rally_descriptor = descriptor_for(
 				::highbar::v1::NATIVE_TACTICAL_DESCRIPTOR_SET_RALLY);
@@ -965,7 +1030,37 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 			queue->set_domain(domain);
 			queue->set_complete(entries.has_value());
 			if (!entries.has_value()) return;
+#ifdef HIGHBAR_STOCK_RECOIL
+			grpc::StockQueueRevisionContext context;
+			context.profile = grpc::kStockTacticalProfile;
+			context.revision = grpc::kStockTacticalRevision;
+			context.evidence_scheme =
+				grpc::QueueEvidenceScheme::StockLuaSupportedFieldsV1;
+			context.catalogue_id = tactical_catalogue_id_;
+			context.catalogue_revision = tactical_catalogue_revision_;
+			context.engine_version = grpc::kEngineReleaseId;
+			context.game_name = tactical_game_name_;
+			context.game_version = tactical_game_version_;
+			context.game_content_sha256 = tactical_game_content_sha256_;
+			context.actor_id = static_cast<std::uint32_t>(unit_id);
+			context.actor_lifetime = actor_out->actor().lifetime();
+			context.domain = domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER
+				? "actor-order"
+				: domain == ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
+				? "production" : "rally";
+			std::vector<grpc::StockQueueEntry> stock_entries;
+			stock_entries.reserve(entries->size());
+			for (const auto& entry : *entries) {
+				stock_entries.push_back({entry.command_id, entry.options,
+					entry.tag, entry.params});
+			}
+			const auto revision = grpc::ComputeStockQueueRevision(context, stock_entries);
+			if (revision == 0) { queue->set_complete(false); return; }
+			queue->set_revision(revision);
+			queue->set_evidence_scheme(::highbar::v1::NATIVE_QUEUE_EVIDENCE_SCHEME_STOCK_LUA_SUPPORTED_FIELDS_V1);
+#else
 			queue->set_revision(grpc::ComputeNativeQueueRevision(*entries));
+#endif
 			if (include_repeat && repeat_mode.has_value()) queue->set_repeat(*repeat_mode);
 			for (const auto& command : *entries) {
 				auto* out = queue->add_entries();
@@ -2167,9 +2262,48 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 					}
 					grpc::TacticalDispatchRefusalReason tactical_refusal =
 						grpc::TacticalDispatchRefusalReason::kUnsupportedOrInvalidArm;
+					grpc::StockQueueRevisionContext stock_context;
+					const grpc::StockQueueRevisionContext* stock_context_pointer = nullptr;
+#ifdef HIGHBAR_STOCK_RECOIL
+					if (entry.live_tactical_command) {
+						const auto& tactical = *entry.live_tactical_command;
+						stock_context.profile = grpc::kStockTacticalProfile;
+						stock_context.revision = grpc::kStockTacticalRevision;
+						stock_context.evidence_scheme =
+							grpc::QueueEvidenceScheme::StockLuaSupportedFieldsV1;
+						stock_context.catalogue_id = tactical.catalogue_id();
+						stock_context.catalogue_revision = tactical.catalogue_revision();
+						stock_context.engine_version = grpc::kEngineReleaseId;
+						stock_context.game_name = tactical_game_name_;
+						stock_context.game_version = tactical_game_version_;
+						stock_context.game_content_sha256 = tactical_game_content_sha256_;
+						stock_context.actor_id = entry.live_actor.id();
+						stock_context.actor_lifetime = entry.live_actor.lifetime();
+						stock_context.domain = tactical.queue_domain()
+							== ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER
+							? "actor-order"
+							: tactical.queue_domain()
+								== ::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_PRODUCTION
+							? "production" : "rally";
+						stock_context_pointer = &stock_context;
+					}
+#endif
+					auto post_control_fence = [&] {
+						const auto now = std::chrono::steady_clock::now();
+						if (now >= entry.live_basis_deadline
+							|| now >= entry.live_command_deadline
+							|| now >= entry.live_lease_deadline) return false;
+						auto* current = circuit->GetTeamUnit(
+							static_cast<ICoreUnit::Id>(entry.live_actor.id()));
+						return current == fresh_actor && !fresh_actor->IsDead()
+							&& live_control_state_->OwnedLifetime(entry.live_actor.id())
+								== entry.live_actor.lifetime();
+					};
 					const bool applied = entry.live_tactical_command
 						? grpc::DispatchTacticalCommand(circuit, fresh_actor,
 							*entry.live_tactical_command, tactical_feature_lifetimes_.get(),
+							stock_context_pointer,
+							post_control_fence,
 							&tactical_refusal)
 						: grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
 					if (!applied) {

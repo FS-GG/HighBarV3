@@ -249,6 +249,10 @@ private:
 	std::string tactical_catalogue_id_;
 	std::uint64_t tactical_catalogue_revision_ = 0;
 	bool tactical_catalogue_complete_ = false;
+	bool tactical_profile_available_ = false;
+	std::string tactical_game_name_;
+	std::string tactical_game_version_;
+	std::string tactical_game_content_sha256_;
 
 	std::string bound_address_;
 
