@@ -24,6 +24,26 @@ constexpr const char* kUnavailable =
 	"request-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\n"
 	"status=unavailable\ndomain=production\nunit=42\nreason=wrong-team\ncount=0\nend\n";
 
+std::string BoundedResponse(std::size_t count, std::size_t parameters_per_row) {
+	std::string response =
+		"BARC_QUEUE_RESPONSE/1\nlength=00000000\nbridge=barc-stock-queue-reader-v1\n"
+		"request-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\n"
+		"status=ok\ndomain=production\nunit=42\ncount=" + std::to_string(count) + "\n";
+	for (std::size_t row = 0; row < count; ++row) {
+		response += "row=production|1|0|" + std::to_string(row) + "|";
+		for (std::size_t parameter = 0; parameter < parameters_per_row; ++parameter) {
+			if (parameter != 0) response += ',';
+			response += "00000000";
+		}
+		response += '\n';
+	}
+	response += "end\n";
+	const auto raw_length = std::to_string(response.size());
+	const std::string length(8 - raw_length.size(), '0');
+	response.replace(response.find("length=") + 7, 8, length + raw_length);
+	return response;
+}
+
 TEST(StockQueueReader, CanonicalRequestAndCompleteVectorAreExact) {
 	EXPECT_EQ(BuildStockQueueRequest(StockQueueDomain::Production, 42), kRequest);
 	EXPECT_EQ(Sha256Hex(kRequest),
@@ -66,6 +86,19 @@ TEST(StockQueueReader, RefusesEchoFramingAndBoundViolations) {
 	value=kComplete;value.replace(value.find("3f800000"),8,"7f800000");EXPECT_TRUE(malformed(value));
 	value=kComplete;value.replace(value.find("count=1"),7,"count=65");EXPECT_TRUE(malformed(value));
 	value.insert(value.find("end\n"),std::string(kStockQueueMaximumLineBytes+1,'x')+"\n");EXPECT_TRUE(malformed(value));
+}
+
+TEST(StockQueueReader, EnforcesEntryAndParameterLimitsAtExactBoundary) {
+	auto parse = [](const std::string& value) {
+		return ParseStockQueueResponse(value, kRequest,
+			StockQueueDomain::Production, 42).status;
+	};
+	EXPECT_EQ(parse(BoundedResponse(64, 0)), StockQueueReadStatus::Complete);
+	EXPECT_EQ(parse(BoundedResponse(65, 0)), StockQueueReadStatus::Malformed);
+	EXPECT_EQ(parse(BoundedResponse(1, 16)), StockQueueReadStatus::Complete);
+	EXPECT_EQ(parse(BoundedResponse(1, 17)), StockQueueReadStatus::Malformed);
+	EXPECT_EQ(parse(BoundedResponse(16, 16)), StockQueueReadStatus::Complete);
+	EXPECT_EQ(parse(BoundedResponse(17, 16)), StockQueueReadStatus::Malformed);
 }
 
 TEST(StockQueueReader, CallsLuaExactlyOnceWithoutRetryOrFallback) {
