@@ -181,6 +181,7 @@ StockQueueReadResult ParseStockQueueResponse(const std::string& response,
 	StockQueueReadResult result;
 	result.domain = expected_domain;
 	result.unit_id = expected_unit_id;
+	result.canonical_request = exact_request;
 	if (response.empty() || response.size() > kStockQueueMaximumBytes
 		|| !SevenBitAsciiWithoutNul(response) || response.back() != '\n') return result;
 	const auto lines = Lines(response);
@@ -260,10 +261,14 @@ StockQueueReadResult ReadStockQueue(StockQueueDomain domain,std::int32_t unit_id
 	const auto request = BuildStockQueueRequest(domain, unit_id);
 	if (request.empty()) return {};
 	try {
-		return ParseStockQueueResponse(call_rules(request.data(), request.size()),
+		auto result = ParseStockQueueResponse(call_rules(request.data(), request.size()),
 			request, domain, unit_id);
+		result.domain = domain; result.unit_id = unit_id;
+		result.canonical_request = request;
+		return result;
 	} catch (...) {
-		return {};
+		StockQueueReadResult result; result.domain = domain; result.unit_id = unit_id;
+		result.canonical_request = request; return result;
 	}
 }
 

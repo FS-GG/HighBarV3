@@ -52,7 +52,8 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp")
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueTrace.cpp")
 	# The tactical helper lands in the native implementation lane. Keep this
 	# contract checkpoint independently buildable while registering the helper
 	# as soon as the coherent join supplies it.
@@ -117,6 +118,16 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 			target_link_libraries(stock_queue_reader_test PRIVATE
 				GTest::gtest GTest::gtest_main)
 			add_test(NAME stock_queue_reader_test COMMAND stock_queue_reader_test)
+		endif ()
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/stock_queue_trace_test.cc")
+			add_executable(stock_queue_trace_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/stock_queue_trace_test.cc")
+			target_include_directories(stock_queue_trace_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(stock_queue_trace_test PRIVATE
+				highbar_command_queue_test_support GTest::gtest GTest::gtest_main)
+			add_test(NAME stock_queue_trace_test COMMAND stock_queue_trace_test)
 		endif ()
 
 		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_feature_capacity_test.cc")
@@ -391,7 +402,8 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
-				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp")
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueTrace.cpp")
 			if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
 				target_sources(highbar_command_queue_test_support PRIVATE
 					"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
@@ -484,6 +496,7 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				    OR _test_name STREQUAL "live_control_state_test"
 				    OR _test_name STREQUAL "tactical_native_state_test"
 				    OR _test_name STREQUAL "stock_queue_reader_test"
+				    OR _test_name STREQUAL "stock_queue_trace_test"
 				    OR _test_name STREQUAL "tactical_feature_capacity_test")
 					target_link_libraries("${_test_name}" PRIVATE
 						highbar_command_queue_test_support)
