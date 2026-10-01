@@ -6,6 +6,7 @@
 #include "grpc/FactoryProductionPolicy.h"
 #include "grpc/GrpcLog.h"
 #include "grpc/StockQueueReader.h"
+#include "grpc/StockQueueTrace.h"
 #include "grpc/TacticalNativeState.h"
 
 #include "CircuitAI.h"
@@ -68,7 +69,13 @@ springai::AIFloat3 ToFloat3(const ::highbar::v1::Vector3& v) {
 	return springai::AIFloat3(v.x(), v.y(), v.z());
 }
 
-std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
+struct TacticalQueueRead {
+	std::vector<NativeQueueEntry> entries;
+	std::optional<StockQueueReadResult> stock;
+	bool complete = false;
+};
+
+std::optional<TacticalQueueRead> ReadCurrentTacticalQueue(
 		::circuit::CCircuitAI* ai, springai::Unit* unit,
 		::highbar::v1::NativeQueueDomain domain) {
 	if (ai == nullptr || unit == nullptr) return std::nullopt;
@@ -84,33 +91,35 @@ std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
 			[&](const char* data, std::size_t size) {
 				return lua->CallRules(data, static_cast<int>(size));
 			});
-		if (read.status != StockQueueReadStatus::Complete) return std::nullopt;
-		std::vector<NativeQueueEntry> entries;
-		entries.reserve(read.entries.size());
+		TacticalQueueRead result;
+		result.stock = read;
+		if (read.status != StockQueueReadStatus::Complete) return result;
+		result.complete = true;
+		result.entries.reserve(read.entries.size());
 		for (const auto& entry : read.entries) {
-			entries.push_back({0, entry.command_id, entry.options,
+			result.entries.push_back({0, entry.command_id, entry.options,
 				entry.tag, 0, entry.params});
 		}
-		return entries;
+		return result;
 	}
 	if (domain != ::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER) {
 		return std::nullopt;
 	}
 #endif
-	auto materialize = [](auto& commands)
-			-> std::optional<std::vector<NativeQueueEntry>> {
+	auto materialize = [](auto& commands) -> std::optional<TacticalQueueRead> {
 		if (commands.size() > kMaximumTacticalQueueEntries) {
 			utils::free_clear(commands);
 			return std::nullopt;
 		}
-		std::vector<NativeQueueEntry> entries;
-		entries.reserve(commands.size());
+		TacticalQueueRead result;
+		result.complete = true;
+		result.entries.reserve(commands.size());
 		for (auto* command : commands) {
 			if (command == nullptr) {
 				utils::free_clear(commands);
 				return std::nullopt;
 			}
-			entries.push_back({command->GetType(), command->GetId(),
+			result.entries.push_back({command->GetType(), command->GetId(),
 				static_cast<std::uint16_t>(command->GetOptions()),
 				command->GetTag(),
 #ifdef HIGHBAR_STOCK_RECOIL
@@ -121,7 +130,7 @@ std::optional<std::vector<NativeQueueEntry>> ReadCurrentTacticalQueue(
 				command->GetParams()});
 		}
 		utils::free_clear(commands);
-		return entries;
+		return result;
 	};
 
 	try {
@@ -159,6 +168,11 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		const ::highbar::v1::NativeTacticalCommand& command,
 		const FeatureLifetimeLedger* feature_lifetimes,
 		const StockQueueRevisionContext* stock_queue_context,
+		StockQueueTraceSink* stock_queue_trace,
+		const ::highbar::v1::NativeObservationBasis* live_basis,
+		const StockQueueDispatchIdentity* dispatch_identity,
+		const std::function<std::uint32_t()>& current_frame,
+		std::uint32_t perspective_team_id,
 		const std::function<bool()>& post_control_fence,
 		TacticalDispatchRefusalReason* refusal_reason) {
 	auto refuse = [&](TacticalDispatchRefusalReason reason) {
@@ -173,7 +187,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 	}
 	auto* native = unit->GetUnit();
 	const auto current_queue = ReadCurrentTacticalQueue(ai, native, command.queue_domain());
-	if (!current_queue.has_value()) {
+	if (!current_queue.has_value() || !current_queue->complete) {
 		return refuse(TacticalDispatchRefusalReason::kQueueUnavailable);
 	}
 	std::optional<std::int32_t> required_tag;
@@ -204,7 +218,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		return NativeQueueMatchesExpected(queue,command.expected_queue_revision(),required_tag);
 #endif
 	};
-	if (!matches_expected(*current_queue)) {
+	if (!matches_expected(current_queue->entries)) {
 		return refuse(TacticalDispatchRefusalReason::kQueueChanged);
 	}
 	auto friendly = [&](const ::highbar::v1::NativeUnitReference& ref) {
@@ -225,7 +239,26 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 			[&] {
 				const auto final_queue = ReadCurrentTacticalQueue(
 					ai, native, command.queue_domain());
-				return final_queue.has_value() && matches_expected(*final_queue);
+				if (!final_queue.has_value()) return false;
+				const bool matched = final_queue->complete
+					&& matches_expected(final_queue->entries);
+			#ifdef HIGHBAR_STOCK_RECOIL
+				if (stock_queue_trace != nullptr && stock_queue_context != nullptr
+					&& live_basis != nullptr && dispatch_identity != nullptr
+					&& final_queue->stock.has_value()) {
+					auto identity = *dispatch_identity; identity.matched = matched;
+					std::uint64_t revision = 0;
+					if (final_queue->stock->status == StockQueueReadStatus::Complete) {
+						revision = ComputeStockQueueRevision(
+							*stock_queue_context, final_queue->stock->entries);
+					}
+					stock_queue_trace->Record({true,
+						current_frame ? current_frame() : 0u, perspective_team_id,
+						*live_basis, *stock_queue_context, *final_queue->stock,
+						revision, identity});
+				}
+			#endif
+				return matched;
 			},
 			[&] { return !post_control_fence || post_control_fence(); },
 			std::forward<decltype(effect)>(effect));
@@ -279,7 +312,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 			: body.queue_policy() == ::highbar::v1::NATIVE_QUEUE_POLICY_REJECT_IF_BUSY
 			? StockFactoryQueuePolicy::RejectIfBusy
 			: StockFactoryQueuePolicy::Replace;
-		if (!StockFactoryProductionPolicyAllows(policy, current_queue->empty())) {
+		if (!StockFactoryProductionPolicyAllows(policy, current_queue->entries.empty())) {
 			return false;
 		}
 		return dispatch_under_external_control([&] {
@@ -288,7 +321,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		});
 #else
 		return DispatchFactoryProductionIfAllowed(
-			body.queue_policy(), current_queue->empty(), [&] {
+			body.queue_policy(), current_queue->entries.empty(), [&] {
 				return dispatch_under_external_control([&] {
 					unit->CmdBuild(def, native->GetPos(), UNIT_NO_FACING, 0);
 				});

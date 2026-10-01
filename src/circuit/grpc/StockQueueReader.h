@@ -41,6 +41,7 @@ struct StockQueueReadResult {
 	StockQueueDomain domain = StockQueueDomain::Production;
 	std::int32_t unit_id = -1;
 	std::string unavailable_reason;
+	std::string canonical_request;
 	std::string canonical_response;
 	std::vector<StockQueueEntry> entries;
 };

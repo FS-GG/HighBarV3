@@ -35,7 +35,9 @@ class CEnemyInfo;
 namespace circuit::grpc {
 
 class FeatureLifetimeLedger;
+class StockQueueTraceSink;
 struct StockQueueRevisionContext;
+struct StockQueueDispatchIdentity;
 
 constexpr int EngineFacingForNativeBuild(
 		::highbar::v1::NativeBuildFacing facing) {
@@ -115,6 +117,11 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		const ::highbar::v1::NativeTacticalCommand& command,
 		const FeatureLifetimeLedger* feature_lifetimes,
 		const StockQueueRevisionContext* stock_queue_context,
+		StockQueueTraceSink* stock_queue_trace,
+		const ::highbar::v1::NativeObservationBasis* live_basis,
+		const StockQueueDispatchIdentity* dispatch_identity,
+		const std::function<std::uint32_t()>& current_frame,
+		std::uint32_t perspective_team_id,
 		const std::function<bool()>& post_control_fence,
 		TacticalDispatchRefusalReason* refusal_reason = nullptr);
 

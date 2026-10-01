@@ -57,6 +57,7 @@ class OrderStateTracker;
 class CoordinatorClient;
 class LiveControlState;
 class FeatureLifetimeLedger;
+class StockQueueTraceSink;
 class MixedLifecycleQualification;
 struct QueuedCommand;
 }  // namespace circuit::grpc
@@ -228,6 +229,7 @@ private:
 	std::unique_ptr<grpc::OrderStateTracker> order_state_tracker_;
 	std::unique_ptr<grpc::LiveControlState> live_control_state_;
 	std::unique_ptr<grpc::FeatureLifetimeLedger> tactical_feature_lifetimes_;
+	std::unique_ptr<grpc::StockQueueTraceSink> stock_queue_trace_;
 	std::unique_ptr<grpc::MixedLifecycleQualification> mixed_lifecycle_qualification_;
 	std::unique_ptr<grpc::QueuedCommand> mixed_lifecycle_held_command_;
 	std::unique_ptr<grpc::HighBarService> service_;

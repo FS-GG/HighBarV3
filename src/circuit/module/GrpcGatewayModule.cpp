@@ -19,6 +19,7 @@
 #include "grpc/GrpcLog.h"
 #include "grpc/RingBuffer.h"
 #include "grpc/StockQueueReader.h"
+#include "grpc/StockQueueTrace.h"
 #include "grpc/OrderStateTracker.h"
 #include "grpc/LiveControlState.h"
 #include "grpc/TacticalNativeState.h"
@@ -416,6 +417,7 @@ CGrpcGatewayModule::CGrpcGatewayModule(CCircuitAI* ai)
 
 		// US2 pieces (T055 + T057 command path).
 		command_queue_ = std::make_unique<grpc::CommandQueue>(counters_.get());
+		stock_queue_trace_ = grpc::StockQueueTraceSink::CreateFromEnvironment();
 		order_state_tracker_ = std::make_unique<grpc::OrderStateTracker>();
 		admin_controller_ = std::make_unique<grpc::AdminController>();
 		admin_service_ = std::make_unique<grpc::AdminService>(
@@ -749,6 +751,7 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 
 void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		const ::highbar::v1::NativeObservationBasis& basis) {
+	std::vector<grpc::StockQueueTraceRecord> pending_stock_trace;
 	if (!tactical_profile_available_ || !tactical_catalogue_complete_) {
 		TraceTacticalSuppression({grpc::TacticalSuppressionReason::CatalogueIncomplete,
 			grpc::TacticalSuppressionSource::None, 0, 1});
@@ -914,6 +917,10 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 		std::optional<std::vector<grpc::NativeQueueEntry>> production_entries;
 		std::optional<std::vector<grpc::NativeQueueEntry>> rally_entries;
 #ifdef HIGHBAR_STOCK_RECOIL
+		std::optional<grpc::StockQueueReadResult> production_read;
+		std::optional<grpc::StockQueueReadResult> rally_read;
+		std::uint32_t production_read_frame = 0;
+		std::uint32_t rally_read_frame = 0;
 		auto read_stock_bridge = [&](grpc::StockQueueDomain domain)
 				-> std::optional<std::vector<grpc::NativeQueueEntry>> {
 			auto* lua = circuit->GetLua();
@@ -923,6 +930,13 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 				[&](const char* data, std::size_t size) {
 					return lua->CallRules(data, static_cast<int>(size));
 				});
+			if (domain == grpc::StockQueueDomain::Production) {
+				production_read = read;
+				production_read_frame = CurrentFrame();
+			} else {
+				rally_read = read;
+				rally_read_frame = CurrentFrame();
+			}
 			if (read.status != grpc::StockQueueReadStatus::Complete) {
 				return std::nullopt;
 			}
@@ -1095,6 +1109,27 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 				production_entries, true);
 			append_queue(::highbar::v1::NATIVE_QUEUE_DOMAIN_FACTORY_RALLY,
 				rally_entries, false);
+#ifdef HIGHBAR_STOCK_RECOIL
+			auto retain_trace = [&](const std::optional<grpc::StockQueueReadResult>& read,
+						grpc::StockQueueDomain domain, std::uint32_t read_frame) {
+				if (!read.has_value()) return;
+				grpc::StockQueueRevisionContext context;
+				context.profile=grpc::kStockTacticalProfile; context.revision=grpc::kStockTacticalRevision;
+				context.evidence_scheme=grpc::QueueEvidenceScheme::StockLuaSupportedFieldsV1;
+				context.catalogue_id=tactical_catalogue_id_; context.catalogue_revision=tactical_catalogue_revision_;
+				context.engine_version=grpc::kEngineReleaseId; context.game_name=tactical_game_name_;
+				context.game_version=tactical_game_version_; context.game_content_sha256=tactical_game_content_sha256_;
+				context.actor_id=static_cast<std::uint32_t>(unit_id); context.actor_lifetime=actor_out->actor().lifetime();
+				context.domain=grpc::StockQueueDomainName(domain);
+				const auto revision = read->status == grpc::StockQueueReadStatus::Complete
+					? grpc::ComputeStockQueueRevision(context, read->entries) : 0u;
+				pending_stock_trace.push_back({false, read_frame,
+					static_cast<std::uint32_t>(circuit->GetTeamId()), basis,
+					std::move(context), *read, revision, std::nullopt});
+			};
+			retain_trace(production_read, grpc::StockQueueDomain::Production, production_read_frame);
+			retain_trace(rally_read, grpc::StockQueueDomain::Rally, rally_read_frame);
+#endif
 		} else {
 			append_queue(::highbar::v1::NATIVE_QUEUE_DOMAIN_ACTOR_ORDER,
 				ordinary_entries, true);
@@ -1102,6 +1137,9 @@ void CGrpcGatewayModule::BuildAndReportTacticalSnapshot(
 	}
 	live_control_state_->RecordTacticalSnapshot(snapshot);
 	coordinator_client_->ReportTacticalSnapshot(snapshot);
+	if (stock_queue_trace_) for (const auto& record : pending_stock_trace) {
+		stock_queue_trace_->Record(record);
+	}
 	TacticalSuppressionTraceThrottle().Reset();
 }
 
@@ -2306,10 +2344,24 @@ void CGrpcGatewayModule::DrainCommandQueue() {
 							&& locked_state.OwnedLifetime(entry.live_actor.id())
 								== entry.live_actor.lifetime();
 					};
+					std::optional<grpc::StockQueueDispatchIdentity> trace_dispatch;
+					if (entry.live_tactical_command) {
+						trace_dispatch = grpc::StockQueueDispatchIdentity{
+							entry.live_binding.broker_session_id(),
+							entry.live_binding.command_channel_incarnation(),
+							entry.batch_seq, entry.client_command_id, entry.command_index,
+							entry.live_binding.authority_epoch(), entry.live_binding.module_sha256(),
+							entry.live_binding.module_generation(),
+							entry.live_tactical_command->expected_queue_revision(), false};
+					}
 					const bool applied = entry.live_tactical_command
 						? grpc::DispatchTacticalCommand(circuit, fresh_actor,
 							*entry.live_tactical_command, tactical_feature_lifetimes_.get(),
 							stock_context_pointer,
+							stock_queue_trace_.get(), &entry.live_basis,
+							trace_dispatch ? &*trace_dispatch : nullptr,
+							[this] { return CurrentFrame(); },
+							static_cast<std::uint32_t>(circuit->GetTeamId()),
 							post_control_fence,
 							&tactical_refusal)
 						: grpc::DispatchCommand(circuit, fresh_actor, cmd, fresh_target);
