@@ -6,7 +6,15 @@
 #include "grpc/TacticalNativeState.h"
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <memory>
+#include <thread>
+
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 using namespace circuit::grpc;
@@ -232,6 +240,55 @@ TEST(LiveControlState, RevocationCannotInterleaveWithGuardedDispatch) {
 	called=false; result=state->DispatchGuarded(q,[&]{ called=true; return true; },t0);
 	EXPECT_FALSE(result.ok); EXPECT_FALSE(called); EXPECT_EQ(result.reason,LIVE_FENCE_AUTHORITY_REVOKED);
 }
+
+#ifndef _WIN32
+TEST(LiveControlState, LockedDispatchLifetimeFenceCompletesWithoutRelocking) {
+	const pid_t child = fork();
+	ASSERT_GE(child, 0);
+	if (child == 0) {
+		auto state = State();
+		const auto t0 = LiveControlState::Clock::time_point{};
+		Apply(*state, LIVE_CONTROL_DIRECTIVE_KIND_ARM, 1);
+		QueuedCommand queued;
+		queued.live = true;
+		queued.live_binding = Binding(1);
+		queued.live_actor.set_id(0);
+		const auto lifetime = state->MarkOwnedPresent(0);
+		queued.live_actor.set_lifetime(lifetime);
+		queued.live_basis = state->RecordBasis(23, 43, 200003, 30,
+			std::chrono::milliseconds(500), t0);
+		queued.live_basis_deadline = queued.live_command_deadline
+			= queued.live_lease_deadline = t0 + std::chrono::seconds(1);
+		const auto accepted = state->DispatchGuardedWithLockedState(queued,
+			[&](const LiveControlState::LockedDispatchState& locked) {
+				return locked.OwnedLifetime(0) == lifetime;
+			}, t0);
+		if (!accepted.ok) _exit(2);
+		const auto refused = state->DispatchGuardedWithLockedState(queued,
+			[&](const LiveControlState::LockedDispatchState& locked) {
+				return locked.OwnedLifetime(0) != lifetime;
+			}, t0);
+		_exit(!refused.ok && refused.reason == LIVE_FENCE_CAPABILITY_CHANGED
+			? 0 : 3);
+	}
+	int status = 0;
+	bool completed = false;
+	for (int attempt = 0; attempt < 100; ++attempt) {
+		if (waitpid(child, &status, WNOHANG) == child) {
+			completed = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	if (!completed) {
+		kill(child, SIGKILL);
+		waitpid(child, &status, 0);
+	}
+	ASSERT_TRUE(completed) << "guarded lifetime fence deadlocked";
+	ASSERT_TRUE(WIFEXITED(status));
+	EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+#endif
 
 TEST(LiveControlState, NativeEmissionAgeCannotBeRenewedByDelayedTransport) {
 	auto state=State(); const auto t0=LiveControlState::Clock::time_point{};

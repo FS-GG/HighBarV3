@@ -1,0 +1,202 @@
+{
+  "schema": "barc.stock-queue-contract/1",
+  "owner": "FS-GG/HighBarV3",
+  "consumer": "FS-GG/FSBarV2",
+  "stockEngine": {
+    "sourceCommit": "2639eedac7d1fd67d793ec93ebd27f014f336a14",
+    "headlessSha256": "e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833",
+    "release": "2025.06.19"
+  },
+  "profiles": {
+    "legacy": {
+      "name": "barc-live-tactical-v1",
+      "revision": 1,
+      "acceptedEvidenceSchemeNumbers": [
+        0,
+        1
+      ],
+      "defaultZeroMeaning": "full-native-tuple-v1"
+    },
+    "stock": {
+      "name": "barc-live-tactical-stock-v1",
+      "revision": 2,
+      "requiredEvidenceSchemeNumber": 2
+    }
+  },
+  "evidenceSchemes": {
+    "unspecified": 0,
+    "fullNativeTupleV1": 1,
+    "stockLuaSupportedFieldsV1": 2
+  },
+  "stockFields": [
+    "domain",
+    "id",
+    "options.coded",
+    "tag",
+    "float32params"
+  ],
+  "unavailableFields": [
+    "timeout"
+  ],
+  "catalogueBinding": [
+    "profile",
+    "revision",
+    "catalogueId",
+    "catalogueRevision",
+    "engineVersion",
+    "gameName",
+    "gameVersion",
+    "gameContentSha256"
+  ],
+  "revisionBinding": [
+    "evidenceScheme",
+    "profile",
+    "revision",
+    "catalogueBinding",
+    "actorId",
+    "actorLifetime",
+    "queueDomain",
+    "completeOrderedRows"
+  ],
+  "revisionAlgorithm": {
+    "name": "barc-stock-queue-revision-sha256-u64be-v1",
+    "preimageMagic": "UTF-8 bytes barc-stock-queue-revision/1 followed by one NUL byte",
+    "fieldEncoding": "ordered fields: one-byte tag, four-byte unsigned big-endian byte length, then raw value bytes; repeated row tag 14 preserves row order; the preimage is binary and has no terminator",
+    "stringEncoding": "strict UTF-8; lengths count encoded bytes",
+    "scalarEncoding": "evidence scheme, tactical revision, actor id and row count are unsigned 32-bit big-endian raw values; catalogue revision and actor lifetime are unsigned 64-bit big-endian raw values",
+    "byteEncoding": "catalogue id and game content SHA-256 are raw bytes, not hex text",
+    "rowEncoding": "tag 14 contains the canonical ASCII bridge row payload after row= and before newline; domain,id,options.coded,tag,float32params; no timeout",
+    "orderedTags": [
+      {
+        "tag": 1,
+        "field": "evidenceScheme"
+      },
+      {
+        "tag": 2,
+        "field": "profile"
+      },
+      {
+        "tag": 3,
+        "field": "revision"
+      },
+      {
+        "tag": 4,
+        "field": "catalogueId"
+      },
+      {
+        "tag": 5,
+        "field": "catalogueRevision"
+      },
+      {
+        "tag": 6,
+        "field": "engineVersion"
+      },
+      {
+        "tag": 7,
+        "field": "gameName"
+      },
+      {
+        "tag": 8,
+        "field": "gameVersion"
+      },
+      {
+        "tag": 9,
+        "field": "gameContentSha256"
+      },
+      {
+        "tag": 10,
+        "field": "actorId"
+      },
+      {
+        "tag": 11,
+        "field": "actorLifetime"
+      },
+      {
+        "tag": 12,
+        "field": "domain"
+      },
+      {
+        "tag": 13,
+        "field": "rowCount"
+      },
+      {
+        "tag": 14,
+        "field": "orderedRow",
+        "repeated": true
+      }
+    ],
+    "fixedValues": {
+      "evidenceScheme": 2,
+      "profile": "barc-live-tactical-stock-v1",
+      "revision": 2
+    },
+    "domainValues": [
+      "actor-order",
+      "production",
+      "rally"
+    ],
+    "validation": "all fixed values must match; actor id is any uint32 including zero; catalogue revision and actor lifetime are nonzero; catalogue id and content SHA-256 are exact bound bytes; every row domain equals the envelope domain; unavailable/incomplete observations mint no revision",
+    "projection": "SHA-256 over the complete binary preimage; first eight digest bytes interpreted as unsigned big-endian uint64",
+    "zeroRule": "if the projected uint64 is zero, use one"
+  },
+  "factoryProductionPolicies": {
+    "append": "supported",
+    "rejectIfBusy": "supported only for an observed empty production queue",
+    "replace": "unsupported including empty queue; refuse without append fallback"
+  },
+  "bridge": {
+    "id": "barc-stock-queue-reader-v1",
+    "requestMagic": "BARC_QUEUE_REQUEST/1",
+    "responseMagic": "BARC_QUEUE_RESPONSE/1",
+    "encoding": "7-bit ASCII without NUL",
+    "length": "eight decimal digits equal total bytes including terminal newline",
+    "terminal": "end\\n",
+    "requestFields": [
+      "bridge",
+      "domain",
+      "unit"
+    ],
+    "responseFields": [
+      "bridge",
+      "request-sha256",
+      "status",
+      "domain",
+      "unit",
+      "reason only when unavailable",
+      "count",
+      "ordered row records only when ok"
+    ],
+    "rowGrammar": "row=<domain>|<signed int32 id>|<uint16 options.coded>|<signed int32 tag>|<comma-separated lowercase float32 bit hex>",
+    "float32": "exactly eight lowercase IEEE-754 binary32 hex digits; finite only; 80000000 is negative zero and must round-trip or the bridge refuses the value",
+    "limits": {
+      "maxInputBytes": 8192,
+      "maxResponseBytes": 8192,
+      "maxEntries": 64,
+      "overflowProbeEntries": 65,
+      "maxParamsPerEntry": 16,
+      "maxTotalParams": 256,
+      "maxLineBytes": 512
+    },
+    "domains": [
+      "production",
+      "rally"
+    ],
+    "statuses": [
+      "ok",
+      "unavailable"
+    ],
+    "unavailableReasons": [
+      "missing-bridge",
+      "wrong-version",
+      "wrong-team",
+      "not-factory",
+      "unsupported-domain",
+      "malformed",
+      "overflow",
+      "nonfinite-float",
+      "negative-zero-unsupported",
+      "oversize"
+    ]
+  },
+  "vectorsFile": "vectors.json"
+}

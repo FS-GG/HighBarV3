@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #pragma once
 
+#include "grpc/StockQueueReader.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -9,6 +11,70 @@
 #include <vector>
 
 namespace circuit::grpc {
+
+inline constexpr const char* kFullTupleTacticalProfile =
+	"barc-live-tactical-v1";
+inline constexpr std::uint32_t kFullTupleTacticalRevision = 1;
+inline constexpr const char* kStockTacticalProfile =
+	"barc-live-tactical-stock-v1";
+inline constexpr std::uint32_t kStockTacticalRevision = 2;
+#ifdef HIGHBAR_STOCK_RECOIL
+inline constexpr bool kStockTacticalBuild = true;
+inline constexpr const char* kConfiguredTacticalProfile = kStockTacticalProfile;
+inline constexpr std::uint32_t kConfiguredTacticalRevision = kStockTacticalRevision;
+#else
+inline constexpr bool kStockTacticalBuild = false;
+inline constexpr const char* kConfiguredTacticalProfile = kFullTupleTacticalProfile;
+inline constexpr std::uint32_t kConfiguredTacticalRevision = kFullTupleTacticalRevision;
+#endif
+
+enum class QueueEvidenceScheme : std::uint32_t {
+	Unspecified = 0,
+	FullNativeTupleV1 = 1,
+	StockLuaSupportedFieldsV1 = 2,
+};
+
+// Zero retains its historical full-tuple meaning only for tactical v1.
+// Stock and unknown/cross-scheme combinations fail closed.
+bool TacticalQueueEvidenceMatches(const char* profile, std::uint32_t revision,
+	QueueEvidenceScheme scheme);
+
+enum class StockFactoryQueuePolicy : std::uint32_t {
+	Replace = 1,
+	Append = 2,
+	RejectIfBusy = 3,
+};
+
+// Stock FactoryProduce Replace is unsupported even for an empty queue. There
+// is no Replace-to-Append alias.
+bool StockFactoryProductionPolicyAllows(StockFactoryQueuePolicy policy,
+	bool observed_empty);
+
+struct StockQueueRevisionContext {
+	std::string profile;
+	std::uint32_t revision = 0;
+	QueueEvidenceScheme evidence_scheme = QueueEvidenceScheme::Unspecified;
+	std::string catalogue_id;
+	std::uint64_t catalogue_revision = 0;
+	std::string engine_version;
+	std::string game_name;
+	std::string game_version;
+	std::string game_content_sha256;
+	std::uint32_t actor_id = 0;
+	std::uint64_t actor_lifetime = 0;
+	std::string domain;
+};
+
+// Binary, length-delimited preimage frozen by
+// contracts/barc-stock-queue-v1/contract.json. Empty means the exact stock
+// binding or a row is invalid; incomplete/unavailable observations never mint
+// a revision.
+std::string BuildStockQueueRevisionPreimage(
+	const StockQueueRevisionContext& context,
+	const std::vector<StockQueueEntry>& entries);
+std::uint64_t ComputeStockQueueRevision(
+	const StockQueueRevisionContext& context,
+	const std::vector<StockQueueEntry>& entries);
 
 // External tactical orders and Circuit's autonomous task scheduler share the
 // same Spring command queue.  The ownership transition must happen before the
@@ -25,6 +91,25 @@ bool DispatchAfterTacticalControlFence(bool already_controlled,
 	return true;
 }
 
+// Stock queue evidence must be read again after Circuit has yielded control.
+// Keep that final fence between control acquisition and the effect so a stale
+// observation can never become an accepted command.
+template <typename AcquireControl, typename FinalRead, typename PostReadFence,
+		typename DispatchEffect>
+bool DispatchAfterTacticalControlAndFinalFence(bool already_controlled,
+		AcquireControl&& acquire_control, FinalRead&& final_read,
+		PostReadFence&& post_read_fence,
+		DispatchEffect&& dispatch_effect) {
+	if (!already_controlled
+		&& !std::forward<AcquireControl>(acquire_control)()) {
+		return false;
+	}
+	if (!std::forward<FinalRead>(final_read)()) return false;
+	if (!std::forward<PostReadFence>(post_read_fence)()) return false;
+	std::forward<DispatchEffect>(dispatch_effect)();
+	return true;
+}
+
 inline constexpr const char* kRallyQueueEngineHash = "7555c83";
 inline constexpr const char* kRallyQueueEngineAdditional =
 	"BARC-01.5-rally-api-v1 Headless";
@@ -34,6 +119,15 @@ inline constexpr const char* kRallyQueueEngineAdditional =
 // SSkirmishAICallback field, because even testing such a field on an older
 // callback table is out-of-bounds.
 bool SupportsRallyQueueApi(const char* hash, const char* additional);
+
+// Stock release callbacks expose no SCM hash/branch/additional suffix. This
+// closed tuple prevents a custom/development artifact from negotiating the
+// stock profile; the external artifact packet additionally binds the full
+// executable SHA-256 because the callback ABI does not expose it.
+bool SupportsStockRecoilProfile(const char* major, const char* minor,
+	const char* patchset, const char* commits, const char* hash, const char* branch,
+	const char* additional, const char* normal, const char* sync,
+	const char* full, bool is_release);
 
 // Engine-neutral projections of the Spring command and feature callbacks.
 // Keeping these types independent of protobuf lets the engine thread take one
@@ -63,6 +157,11 @@ NativeQueueSnapshot MakeNativeQueueSnapshot(
 // action and the callback value is an exact id in the engine's unit-id range.
 std::optional<std::uint32_t> ExactNativeQueueUnitTargetId(
 	const NativeQueueEntry& entry, bool unit_target_action);
+
+// Spring build commands encode the definition as a negative signed id. Widen
+// before taking the magnitude so the full accepted int32 bridge range,
+// including INT32_MIN, has defined behavior.
+std::optional<std::uint32_t> NativeBuildDefinitionId(std::int32_t command_id);
 
 struct NativeQueueUnitTarget {
 	std::uint32_t id = 0;

@@ -338,11 +338,31 @@ LiveFenceResult LiveControlState::CheckTacticalCommandLocked(
 LiveFenceResult LiveControlState::DispatchGuarded(
 		const QueuedCommand& q, const std::function<bool()>& dispatch,
 		Clock::time_point now) const {
+	return DispatchGuardedWithLockedState(q,
+		[&](const LockedDispatchState&) { return dispatch(); }, now);
+}
+
+LiveFenceResult LiveControlState::DispatchGuardedWithLockedState(
+		const QueuedCommand& q,
+		const std::function<bool(const LockedDispatchState&)>& dispatch,
+		Clock::time_point now) const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto checked = CheckQueuedCommandLocked(q, now);
 	if (!checked.ok) return checked;
-	if (!dispatch()) return {false, ::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED};
+	if (!dispatch(LockedDispatchState(this))) {
+		return {false, ::highbar::v1::LIVE_FENCE_CAPABILITY_CHANGED};
+	}
 	return checked;
+}
+
+std::uint64_t LiveControlState::LockedDispatchState::OwnedLifetime(
+		std::uint32_t id) const {
+	return state_->OwnedLifetimeLocked(id);
+}
+
+std::uint64_t LiveControlState::OwnedLifetimeLocked(std::uint32_t id) const {
+	auto it = owned_.find(id);
+	return it != owned_.end() && it->second.present ? it->second.lifetime : 0;
 }
 
 std::uint64_t LiveControlState::MarkOwnedPresent(std::uint32_t id) {
@@ -368,8 +388,8 @@ void LiveControlState::MarkEnemyRemoved(std::uint32_t id) {
 	if (x.present) { x.present = false; x.visual = false; if (++x.lifetime == 0) ++x.lifetime; }
 }
 std::uint64_t LiveControlState::OwnedLifetime(std::uint32_t id) const {
-	std::lock_guard<std::mutex> lock(mutex_); auto it = owned_.find(id);
-	return it != owned_.end() && it->second.present ? it->second.lifetime : 0;
+	std::lock_guard<std::mutex> lock(mutex_);
+	return OwnedLifetimeLocked(id);
 }
 std::uint64_t LiveControlState::EnemyLifetime(std::uint32_t id) const {
 	std::lock_guard<std::mutex> lock(mutex_); auto it = enemies_.find(id);

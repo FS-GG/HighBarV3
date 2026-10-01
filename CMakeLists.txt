@@ -51,7 +51,8 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 	add_library(highbar_command_queue_test_support STATIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
-		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp")
 	# The tactical helper lands in the native implementation lane. Keep this
 	# contract checkpoint independently buildable while registering the helper
 	# as soon as the coherent join supplies it.
@@ -105,6 +106,17 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 				highbar_command_queue_test_support
 				GTest::gtest GTest::gtest_main)
 			add_test(NAME tactical_native_state_test COMMAND tactical_native_state_test)
+		endif ()
+
+		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/stock_queue_reader_test.cc")
+			add_executable(stock_queue_reader_test
+				"${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/stock_queue_reader_test.cc"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp")
+			target_include_directories(stock_queue_reader_test PRIVATE
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit")
+			target_link_libraries(stock_queue_reader_test PRIVATE
+				GTest::gtest GTest::gtest_main)
+			add_test(NAME stock_queue_reader_test COMMAND stock_queue_reader_test)
 		endif ()
 
 		if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/tactical_feature_capacity_test.cc")
@@ -162,6 +174,13 @@ endif ()
 
 set(CMAKE_CXX_STANDARD 20)
 
+option(HIGHBAR_STOCK_RECOIL
+	"Build the stock Recoil 2025.06.19 tactical profile without appended callbacks" OFF)
+if (HIGHBAR_STOCK_RECOIL AND HIGHBAR_FACTORY_REPLACEMENT_V1)
+	message(FATAL_ERROR
+		"HIGHBAR_STOCK_RECOIL cannot be combined with the custom factory replacement extension")
+endif ()
+
 set(mySourceDirRel         "src/") # Common values are "" or "src"
 set(additionalSources      ${CMAKE_SOURCE_DIR}/rts/System/StringUtil.cpp)
 set(additionalSources      ${additionalSources} ${CMAKE_SOURCE_DIR}/rts/System/Misc/SpringTime.cpp)
@@ -186,6 +205,10 @@ else  (CIRCUIT_DEBUG)
 	set(additionalCompileFlags "-Wall")
 	# set(additionalCompileFlags "-Wall -fno-omit-frame-pointer -O1")
 endif (CIRCUIT_DEBUG)
+if (HIGHBAR_STOCK_RECOIL)
+	set(additionalCompileFlags
+		"${additionalCompileFlags} -DHIGHBAR_STOCK_RECOIL=1")
+endif ()
 
 # set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -static-libgcc -static-libstdc++ -lasan")
 
@@ -307,6 +330,11 @@ if    (BUILD_Cpp_AIWRAPPER)
 	set(HIGHBAR_ENGINE_RELEASE_ID "${CMAKE_MATCH_1}")
 	string(REGEX MATCH "sha256[ \t]*=[ \t]*\"([^\"]+)\"" _ "${_highbar_pin_content}")
 	set(HIGHBAR_ENGINE_SHA256 "${CMAKE_MATCH_1}")
+	if (HIGHBAR_STOCK_RECOIL)
+		set(HIGHBAR_ENGINE_RELEASE_ID "2025.06.19")
+		set(HIGHBAR_ENGINE_SHA256
+			"e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833")
+	endif ()
 	if (NOT HIGHBAR_ENGINE_RELEASE_ID OR NOT HIGHBAR_ENGINE_SHA256)
 		message(FATAL_ERROR
 			"HighBarV3: failed to parse release_id/sha256 from ${HIGHBAR_PIN_FILE}")
@@ -362,7 +390,8 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 			add_library(highbar_command_queue_test_support STATIC
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/CommandQueue.cpp"
 				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/LiveControlState.cpp"
-				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp")
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/Counters.cpp"
+				"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/StockQueueReader.cpp")
 			if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
 				target_sources(highbar_command_queue_test_support PRIVATE
 					"${CMAKE_CURRENT_SOURCE_DIR}/src/circuit/grpc/TacticalNativeState.cpp")
@@ -454,6 +483,7 @@ constexpr const char* kEngineSha256    = "@HIGHBAR_ENGINE_SHA256@";
 				    OR _test_name STREQUAL "coordinator_command_admission_test"
 				    OR _test_name STREQUAL "live_control_state_test"
 				    OR _test_name STREQUAL "tactical_native_state_test"
+				    OR _test_name STREQUAL "stock_queue_reader_test"
 				    OR _test_name STREQUAL "tactical_feature_capacity_test")
 					target_link_libraries("${_test_name}" PRIVATE
 						highbar_command_queue_test_support)

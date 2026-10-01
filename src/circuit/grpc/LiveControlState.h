@@ -33,6 +33,18 @@ enum class BasisLookupResult {
 class LiveControlState {
 public:
 	using Clock = std::chrono::steady_clock;
+	class LockedDispatchState {
+	public:
+		LockedDispatchState(const LockedDispatchState&) = delete;
+		LockedDispatchState& operator=(const LockedDispatchState&) = delete;
+		std::uint64_t OwnedLifetime(std::uint32_t id) const;
+
+	private:
+		friend class LiveControlState;
+		explicit LockedDispatchState(const LiveControlState* state)
+			: state_(state) {}
+		const LiveControlState* state_;
+	};
 	static std::string NewMatchIncarnation();
 
 	LiveControlState(std::string plugin_id,
@@ -64,6 +76,10 @@ public:
 	LiveFenceResult DispatchGuarded(
 		const QueuedCommand& command,
 		const std::function<bool()>& dispatch,
+		Clock::time_point now = Clock::now()) const;
+	LiveFenceResult DispatchGuardedWithLockedState(
+		const QueuedCommand& command,
+		const std::function<bool(const LockedDispatchState&)>& dispatch,
 		Clock::time_point now = Clock::now()) const;
 	bool LegacyGameplayAllowed() const;
 	bool DispatchLegacyGuarded(const std::function<bool()>& dispatch) const;
@@ -117,6 +133,7 @@ private:
 		const ::highbar::v1::LiveCommandBatch& batch) const;
 	BasisLookupResult ClassifyBasisLocked(
 		const ::highbar::v1::NativeObservationBasis& basis) const;
+	std::uint64_t OwnedLifetimeLocked(std::uint32_t id) const;
 
 	std::string plugin_id_;
 	std::string process_incarnation_;

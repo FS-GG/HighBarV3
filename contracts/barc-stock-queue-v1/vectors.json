@@ -1,0 +1,58 @@
+{
+  "schema": "barc.stock-queue-bridge-vectors/1",
+  "requestSha256": "b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960",
+  "vectors": [
+    {
+      "name": "production-request",
+      "kind": "request",
+      "ascii": "BARC_QUEUE_REQUEST/1\nlength=00000101\nbridge=barc-stock-queue-reader-v1\ndomain=production\nunit=42\nend\n",
+      "byteLength": 101,
+      "sha256": "b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960"
+    },
+    {
+      "name": "empty-production",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000200\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=ok\ndomain=production\nunit=42\ncount=0\nend\n",
+      "byteLength": 200,
+      "sha256": "996539730370dcee4240a0d66c24a94fd9cda77ef5fea3aff07eed90cb7409bb"
+    },
+    {
+      "name": "one-production-with-negative-zero",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000244\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=ok\ndomain=production\nunit=42\ncount=1\nrow=production|-710|32|41|3f800000,80000000\nend\n",
+      "byteLength": 244,
+      "sha256": "b9294f24faaad63777f99c44dd6201dabf41ec32772b862d657698d3c5d32ec5"
+    },
+    {
+      "name": "wrong-team-unavailable",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000227\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=unavailable\ndomain=production\nunit=42\nreason=wrong-team\ncount=0\nend\n",
+      "byteLength": 227,
+      "sha256": "63861e8f1682fbd8e8551a24a4c39d1217a8b98e269bd44aceaf266c144acb6e"
+    }
+  ],
+  "revisionVector": {
+    "name": "one-production-bound-revision",
+    "context": {
+      "evidenceScheme": 2,
+      "profile": "barc-live-tactical-stock-v1",
+      "revision": 2,
+      "catalogueIdHex": "000102030405060708090a0b0c0d0e0f",
+      "catalogueRevision": "9007199254741107",
+      "engineVersion": "2025.06.19",
+      "gameName": "BAR",
+      "gameVersion": "test-29926-0571aa8",
+      "gameContentSha256Hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "actorId": 42,
+      "actorLifetime": "9007199254741105",
+      "domain": "production",
+      "rows": [
+        "production|-710|32|41|3f800000,80000000"
+      ]
+    },
+    "preimageByteLength": 285,
+    "preimageHex": "626172632d73746f636b2d71756575652d7265766973696f6e2f3100010000000400000002020000001b626172632d6c6976652d746163746963616c2d73746f636b2d76310300000004000000020400000010000102030405060708090a0b0c0d0e0f05000000080020000000000073060000000a323032352e30362e313907000000034241520800000012746573742d32393932362d303537316161380900000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0a000000040000002a0b0000000800200000000000710c0000000a70726f64756374696f6e0d00000004000000010e0000002770726f64756374696f6e7c2d3731307c33327c34317c33663830303030302c3830303030303030",
+    "sha256": "fbd1b79418f394d4e8a8e847c155d43c65e071b76375f9682266453933302c37",
+    "projectedUint64": "18145486220354098388"
+  }
+}

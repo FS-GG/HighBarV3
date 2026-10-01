@@ -19,9 +19,16 @@ public:
 	virtual ~CEngine();
 
 	const char* GetVersionMajor() const;
+	const char* GetVersionMinor() const;
+	const char* GetVersionPatchset() const;
+	const char* GetVersionCommits() const;
 	const char* GetVersionHash() const;
 	const char* GetVersionBranch() const;
 	const char* GetVersionAdditional() const;
+	const char* GetVersionNormal() const;
+	const char* GetVersionSync() const;
+	const char* GetVersionFull() const;
+	bool IsVersionRelease() const;
 
 private:
 	const struct SSkirmishAICallback* sAICallback;
