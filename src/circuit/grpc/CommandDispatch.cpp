@@ -5,6 +5,7 @@
 #include "grpc/CommandDispatch.h"
 #include "grpc/FactoryProductionPolicy.h"
 #include "grpc/GrpcLog.h"
+#include "grpc/NativeCommandOptions.h"
 #include "grpc/StockQueueReader.h"
 #include "grpc/StockQueueTrace.h"
 #include "grpc/TacticalNativeState.h"
@@ -53,11 +54,6 @@ namespace {
 
 constexpr float kMaximumTacticalAreaRadius = 2048.0f;
 constexpr std::size_t kMaximumTacticalQueueEntries = 64;
-
-short TacticalOptions(::highbar::v1::NativeQueuePolicy policy) {
-	return policy == ::highbar::v1::NATIVE_QUEUE_POLICY_APPEND
-		? UNIT_COMMAND_OPTION_SHIFT_KEY : 0;
-}
 
 static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_NORTH) == UNIT_FACING_NORTH);
 static_assert(EngineFacingForNativeBuild(::highbar::v1::NATIVE_BUILD_FACING_EAST) == UNIT_FACING_EAST);
@@ -317,7 +313,7 @@ bool DispatchTacticalCommand(::circuit::CCircuitAI* ai,
 		}
 		return dispatch_under_external_control([&] {
 			unit->CmdBuild(def, native->GetPos(), UNIT_NO_FACING,
-				TacticalOptions(body.queue_policy()));
+				StockFactoryProductionOptions());
 		});
 #else
 		return DispatchFactoryProductionIfAllowed(

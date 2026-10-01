@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "grpc/TacticalNativeState.h"
+#include "grpc/NativeCommandOptions.h"
 
 #include <gtest/gtest.h>
 
@@ -43,6 +44,29 @@ TEST(TacticalNativeState, StockFactoryReplaceNeverAliasesAppend) {
 		StockFactoryQueuePolicy::Replace, false));
 	EXPECT_FALSE(StockFactoryProductionPolicyAllows(
 		StockFactoryQueuePolicy::Replace, true));
+}
+
+TEST(TacticalNativeState, StockFactoryCountOneUsesDefaultAppendWithoutQuantityMultiplier) {
+	constexpr auto stock_factory_count = [](short options) {
+		return (options & UNIT_COMMAND_OPTION_SHIFT_KEY) != 0 ? 5 : 1;
+	};
+	constexpr std::size_t queued_before = 2;
+
+	const short production_options = StockFactoryProductionOptions();
+	EXPECT_EQ(production_options, 0);
+	EXPECT_EQ(queued_before + stock_factory_count(production_options), 3u);
+
+	// This is the previous production mapping. It proves the regression would
+	// observe five new engine queue entries rather than accepting count one.
+	const short generic_append = TacticalOptions(
+		::highbar::v1::NATIVE_QUEUE_POLICY_APPEND);
+	EXPECT_EQ(generic_append, UNIT_COMMAND_OPTION_SHIFT_KEY);
+	EXPECT_EQ(queued_before + stock_factory_count(generic_append), 7u);
+
+	// Ordinary tactical commands keep their established append modifier.
+	EXPECT_EQ(TacticalOptions(::highbar::v1::NATIVE_QUEUE_POLICY_APPEND),
+		UNIT_COMMAND_OPTION_SHIFT_KEY);
+	EXPECT_EQ(TacticalOptions(::highbar::v1::NATIVE_QUEUE_POLICY_REPLACE), 0);
 }
 
 TEST(TacticalNativeState, FinalQueueFenceRunsAfterControlAndBeforeEffect) {
