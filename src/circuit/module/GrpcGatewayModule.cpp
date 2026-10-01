@@ -587,8 +587,8 @@ void CGrpcGatewayModule::EnsureCoordinatorClientStarted(const char* reason) {
 	capabilities.set_supports_stop(true); capabilities.set_supports_move(true);
 	capabilities.set_supports_attack_visible_unit(true); capabilities.set_max_reported_units(live_max_reported_units_);
 	auto* tactical = capabilities.mutable_tactical();
-	tactical->set_profile("barc-live-tactical-v1");
-	tactical->set_revision(1);
+	tactical->set_profile(grpc::kFullTupleTacticalProfile);
+	tactical->set_revision(grpc::kFullTupleTacticalRevision);
 	tactical->set_max_catalogue_entries(kTacticalMaxCatalogueEntries);
 	tactical->set_max_catalogue_page_entries(kTacticalPageEntries);
 	tactical->set_max_build_options_per_actor(kTacticalMaxBuildOptions);
@@ -710,7 +710,8 @@ void CGrpcGatewayModule::BuildAndReportTacticalCatalogue() {
 	const std::size_t page_count = std::max<std::size_t>(1, (native.size()+kTacticalPageEntries-1)/kTacticalPageEntries);
 	for (std::size_t page_index=0; page_index<page_count; ++page_index) {
 		::highbar::v1::TacticalCataloguePage page;
-		page.set_tactical_profile("barc-live-tactical-v1"); page.set_tactical_revision(1);
+		page.set_tactical_profile(grpc::kFullTupleTacticalProfile);
+		page.set_tactical_revision(grpc::kFullTupleTacticalRevision);
 		page.mutable_content()->set_engine_version(grpc::kEngineReleaseId);
 		page.mutable_content()->set_game_name(game_name); page.mutable_content()->set_game_version(game_version);
 		page.mutable_content()->set_game_content_sha256(content_hash);

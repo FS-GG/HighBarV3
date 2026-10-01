@@ -303,6 +303,15 @@ enum NativeQueueDomain {
   NATIVE_QUEUE_DOMAIN_FACTORY_RALLY = 3;
 }
 
+// Queue revisions are meaningful only within their negotiated evidence
+// scheme. Tactical v1 historically omitted this field; zero therefore keeps
+// its full-native-tuple-v1 meaning only for that exact legacy profile.
+enum NativeQueueEvidenceScheme {
+  NATIVE_QUEUE_EVIDENCE_SCHEME_UNSPECIFIED = 0;
+  NATIVE_QUEUE_EVIDENCE_SCHEME_FULL_NATIVE_TUPLE_V1 = 1;
+  NATIVE_QUEUE_EVIDENCE_SCHEME_STOCK_LUA_SUPPORTED_FIELDS_V1 = 2;
+}
+
 enum NativeTacticalDescriptorKind {
   NATIVE_TACTICAL_DESCRIPTOR_KIND_UNSPECIFIED = 0;
   NATIVE_TACTICAL_DESCRIPTOR_BUILD = 1;
@@ -446,6 +455,11 @@ message NativeObservedQueue {
   repeated NativeObservedQueueEntry entries = 3;
   bool complete = 4;
   optional bool repeat = 5;
+  // barc-live-tactical-v1 revision 1 accepts zero (its historical default)
+  // or FULL_NATIVE_TUPLE_V1. barc-live-tactical-stock-v1 revision 2 requires
+  // STOCK_LUA_SUPPORTED_FIELDS_V1; zero, unknown and cross-profile values are
+  // unavailable and cannot authorize an action.
+  NativeQueueEvidenceScheme evidence_scheme = 6;
 }
 
 message TacticalSnapshotMetadata {

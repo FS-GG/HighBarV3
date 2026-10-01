@@ -8,6 +8,40 @@
 namespace {
 using namespace circuit::grpc;
 
+TEST(TacticalNativeState, QueueEvidenceIsBoundToExactProfileAndRevision) {
+	EXPECT_TRUE(TacticalQueueEvidenceMatches(kFullTupleTacticalProfile,
+		kFullTupleTacticalRevision, QueueEvidenceScheme::Unspecified));
+	EXPECT_TRUE(TacticalQueueEvidenceMatches(kFullTupleTacticalProfile,
+		kFullTupleTacticalRevision, QueueEvidenceScheme::FullNativeTupleV1));
+	EXPECT_TRUE(TacticalQueueEvidenceMatches(kStockTacticalProfile,
+		kStockTacticalRevision, QueueEvidenceScheme::StockLuaSupportedFieldsV1));
+	EXPECT_FALSE(TacticalQueueEvidenceMatches(kStockTacticalProfile,
+		kStockTacticalRevision, QueueEvidenceScheme::Unspecified));
+	EXPECT_FALSE(TacticalQueueEvidenceMatches(kStockTacticalProfile,
+		kStockTacticalRevision, QueueEvidenceScheme::FullNativeTupleV1));
+	EXPECT_FALSE(TacticalQueueEvidenceMatches(kFullTupleTacticalProfile,
+		kFullTupleTacticalRevision, QueueEvidenceScheme::StockLuaSupportedFieldsV1));
+	EXPECT_FALSE(TacticalQueueEvidenceMatches(kStockTacticalProfile, 1,
+		QueueEvidenceScheme::StockLuaSupportedFieldsV1));
+	EXPECT_FALSE(TacticalQueueEvidenceMatches("unknown", 2,
+		QueueEvidenceScheme::StockLuaSupportedFieldsV1));
+}
+
+TEST(TacticalNativeState, StockFactoryReplaceNeverAliasesAppend) {
+	EXPECT_TRUE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::Append, false));
+	EXPECT_TRUE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::Append, true));
+	EXPECT_TRUE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::RejectIfBusy, true));
+	EXPECT_FALSE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::RejectIfBusy, false));
+	EXPECT_FALSE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::Replace, false));
+	EXPECT_FALSE(StockFactoryProductionPolicyAllows(
+		StockFactoryQueuePolicy::Replace, true));
+}
+
 TEST(TacticalNativeState, RallyQueueApiRequiresExactPreexistingVersionIdentity) {
 	EXPECT_TRUE(SupportsRallyQueueApi(
 		kRallyQueueEngineHash, kRallyQueueEngineAdditional));

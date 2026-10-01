@@ -10,6 +10,35 @@
 
 namespace circuit::grpc {
 
+inline constexpr const char* kFullTupleTacticalProfile =
+	"barc-live-tactical-v1";
+inline constexpr std::uint32_t kFullTupleTacticalRevision = 1;
+inline constexpr const char* kStockTacticalProfile =
+	"barc-live-tactical-stock-v1";
+inline constexpr std::uint32_t kStockTacticalRevision = 2;
+
+enum class QueueEvidenceScheme : std::uint32_t {
+	Unspecified = 0,
+	FullNativeTupleV1 = 1,
+	StockLuaSupportedFieldsV1 = 2,
+};
+
+// Zero retains its historical full-tuple meaning only for tactical v1.
+// Stock and unknown/cross-scheme combinations fail closed.
+bool TacticalQueueEvidenceMatches(const char* profile, std::uint32_t revision,
+	QueueEvidenceScheme scheme);
+
+enum class StockFactoryQueuePolicy : std::uint32_t {
+	Replace = 1,
+	Append = 2,
+	RejectIfBusy = 3,
+};
+
+// Stock FactoryProduce Replace is unsupported even for an empty queue. There
+// is no Replace-to-Append alias.
+bool StockFactoryProductionPolicyAllows(StockFactoryQueuePolicy policy,
+	bool observed_empty);
+
 // External tactical orders and Circuit's autonomous task scheduler share the
 // same Spring command queue.  The ownership transition must happen before the
 // accepted effect is emitted so a later autonomous update cannot insert an

@@ -40,6 +40,32 @@ void AdvanceLifetime(std::uint64_t* lifetime) {
 
 }  // namespace
 
+bool TacticalQueueEvidenceMatches(const char* profile,
+		std::uint32_t revision, QueueEvidenceScheme scheme) {
+	if (profile == nullptr) return false;
+	if (std::strcmp(profile, kFullTupleTacticalProfile) == 0
+		&& revision == kFullTupleTacticalRevision) {
+		return scheme == QueueEvidenceScheme::Unspecified
+			|| scheme == QueueEvidenceScheme::FullNativeTupleV1;
+	}
+	return std::strcmp(profile, kStockTacticalProfile) == 0
+		&& revision == kStockTacticalRevision
+		&& scheme == QueueEvidenceScheme::StockLuaSupportedFieldsV1;
+}
+
+bool StockFactoryProductionPolicyAllows(StockFactoryQueuePolicy policy,
+		bool observed_empty) {
+	switch (policy) {
+	case StockFactoryQueuePolicy::Append:
+		return true;
+	case StockFactoryQueuePolicy::RejectIfBusy:
+		return observed_empty;
+	case StockFactoryQueuePolicy::Replace:
+		return false;
+	}
+	return false;
+}
+
 bool SupportsRallyQueueApi(const char* hash, const char* additional) {
 	return hash != nullptr && additional != nullptr
 		&& std::strcmp(hash, kRallyQueueEngineHash) == 0

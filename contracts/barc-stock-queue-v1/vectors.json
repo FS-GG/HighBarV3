@@ -1,0 +1,34 @@
+{
+  "schema": "barc.stock-queue-bridge-vectors/1",
+  "requestSha256": "b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960",
+  "vectors": [
+    {
+      "name": "production-request",
+      "kind": "request",
+      "ascii": "BARC_QUEUE_REQUEST/1\nlength=00000101\nbridge=barc-stock-queue-reader-v1\ndomain=production\nunit=42\nend\n",
+      "byteLength": 101,
+      "sha256": "b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960"
+    },
+    {
+      "name": "empty-production",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000200\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=ok\ndomain=production\nunit=42\ncount=0\nend\n",
+      "byteLength": 200,
+      "sha256": "996539730370dcee4240a0d66c24a94fd9cda77ef5fea3aff07eed90cb7409bb"
+    },
+    {
+      "name": "one-production-with-negative-zero",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000244\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=ok\ndomain=production\nunit=42\ncount=1\nrow=production|-710|32|41|3f800000,80000000\nend\n",
+      "byteLength": 244,
+      "sha256": "b9294f24faaad63777f99c44dd6201dabf41ec32772b862d657698d3c5d32ec5"
+    },
+    {
+      "name": "wrong-team-unavailable",
+      "kind": "response",
+      "ascii": "BARC_QUEUE_RESPONSE/1\nlength=00000227\nbridge=barc-stock-queue-reader-v1\nrequest-sha256=b01b44c1eaea587730eae794c0b87e4e05dddecfb508abd295ac1e138a0f5960\nstatus=unavailable\ndomain=production\nunit=42\nreason=wrong-team\ncount=0\nend\n",
+      "byteLength": 227,
+      "sha256": "63861e8f1682fbd8e8551a24a4c39d1217a8b98e269bd44aceaf266c144acb6e"
+    }
+  ]
+}

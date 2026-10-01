@@ -1,0 +1,127 @@
+{
+  "schema": "barc.stock-queue-contract/1",
+  "owner": "FS-GG/HighBarV3",
+  "consumer": "FS-GG/FSBarV2",
+  "stockEngine": {
+    "sourceCommit": "2639eedac7d1fd67d793ec93ebd27f014f336a14",
+    "headlessSha256": "e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833",
+    "release": "2025.06.19"
+  },
+  "profiles": {
+    "legacy": {
+      "name": "barc-live-tactical-v1",
+      "revision": 1,
+      "acceptedEvidenceSchemeNumbers": [
+        0,
+        1
+      ],
+      "defaultZeroMeaning": "full-native-tuple-v1"
+    },
+    "stock": {
+      "name": "barc-live-tactical-stock-v1",
+      "revision": 2,
+      "requiredEvidenceSchemeNumber": 2
+    }
+  },
+  "evidenceSchemes": {
+    "unspecified": 0,
+    "fullNativeTupleV1": 1,
+    "stockLuaSupportedFieldsV1": 2
+  },
+  "stockFields": [
+    "domain",
+    "id",
+    "options.coded",
+    "tag",
+    "float32params"
+  ],
+  "unavailableFields": [
+    "timeout"
+  ],
+  "catalogueBinding": [
+    "profile",
+    "revision",
+    "catalogueId",
+    "catalogueRevision",
+    "engineVersion",
+    "gameName",
+    "gameVersion",
+    "gameContentSha256"
+  ],
+  "revisionBinding": [
+    "evidenceScheme",
+    "profile",
+    "revision",
+    "catalogueBinding",
+    "actorId",
+    "actorLifetime",
+    "queueDomain",
+    "completeOrderedRows"
+  ],
+  "revisionAlgorithm": {
+    "name": "barc-stock-queue-revision-sha256-u64be-v1",
+    "input": "canonical ASCII response plus profile, catalogue binding and actor lifetime envelope",
+    "projection": "first eight SHA-256 bytes as unsigned big-endian uint64",
+    "zeroRule": "map zero to one"
+  },
+  "factoryProductionPolicies": {
+    "append": "supported",
+    "rejectIfBusy": "supported only for an observed empty production queue",
+    "replace": "unsupported including empty queue; refuse without append fallback"
+  },
+  "bridge": {
+    "id": "barc-stock-queue-reader-v1",
+    "requestMagic": "BARC_QUEUE_REQUEST/1",
+    "responseMagic": "BARC_QUEUE_RESPONSE/1",
+    "encoding": "7-bit ASCII without NUL",
+    "length": "eight decimal digits equal total bytes including terminal newline",
+    "terminal": "end\\n",
+    "requestFields": [
+      "bridge",
+      "domain",
+      "unit"
+    ],
+    "responseFields": [
+      "bridge",
+      "request-sha256",
+      "status",
+      "domain",
+      "unit",
+      "reason only when unavailable",
+      "count",
+      "ordered row records only when ok"
+    ],
+    "rowGrammar": "row=<domain>|<signed int32 id>|<uint16 options.coded>|<signed int32 tag>|<comma-separated lowercase float32 bit hex>",
+    "float32": "exactly eight lowercase IEEE-754 binary32 hex digits; finite only; 80000000 is negative zero and must round-trip or the bridge refuses the value",
+    "limits": {
+      "maxInputBytes": 8192,
+      "maxResponseBytes": 8192,
+      "maxEntries": 64,
+      "overflowProbeEntries": 65,
+      "maxParamsPerEntry": 16,
+      "maxTotalParams": 256,
+      "maxLineBytes": 512
+    },
+    "domains": [
+      "production",
+      "rally"
+    ],
+    "statuses": [
+      "ok",
+      "unavailable"
+    ],
+    "unavailableReasons": [
+      "missing-bridge",
+      "wrong-version",
+      "wrong-team",
+      "not-factory",
+      "unsupported-domain",
+      "malformed",
+      "overflow",
+      "nonfinite-float",
+      "negative-zero-unsupported",
+      "oversize"
+    ]
+  },
+  "vectorsFile": "vectors.json"
+}
