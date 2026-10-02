@@ -151,7 +151,7 @@ bool Valid(const StockQueueTraceRecord& r) {
 	if (c.profile != kStockTacticalProfile || c.revision != kStockTacticalRevision
 		|| c.evidence_scheme != QueueEvidenceScheme::StockLuaSupportedFieldsV1
 		|| c.catalogue_id.size() != 16 || c.catalogue_revision == 0
-		|| c.engine_version != "2025.06.19" || !BoundedText(c.game_name)
+		|| c.engine_version != "2026.07.04" || !BoundedText(c.game_name)
 		|| !BoundedText(c.game_version) || c.game_content_sha256.size() != 32
 		|| c.actor_id > 31999 || c.actor_lifetime == 0
 		|| (c.domain != "production" && c.domain != "rally")) return false;

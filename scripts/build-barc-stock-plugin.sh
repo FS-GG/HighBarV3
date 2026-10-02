@@ -9,9 +9,9 @@ fi
 recoil_source=$(realpath "$1")
 highbar_source=$(realpath "$2")
 build_dir=$(realpath -m "$3")
-expected_recoil_commit=2639eedac7d1fd67d793ec93ebd27f014f336a14
-expected_recoil_tree=94c1d8ad62b20285b19c1b5f3360a81fbbc54468
-expected_contract_sha=28afbc6703843a617db5e3f59a5fcf55a671c993f0585766f1ab2f71218333dc
+expected_recoil_commit=de69361239d8c8b1012dba3f5aa3122954ea4da3
+expected_recoil_tree=081bfe95b4e76e3212afa5805ab5a82e474c0b47
+expected_contract_sha=ac0c94390a1b5da600e49e2d00d9a36d4782964a33603ddbc2c4bafbd3db8c28
 cmake_bin=${BARC_CMAKE_BIN:-cmake}
 sysroot=${BARC_SYSROOT:-/tmp/barc-native-assets/sysroot/usr}
 jobs=${BARC_BUILD_JOBS:-4}
@@ -22,7 +22,7 @@ if (( jobs < 1 || jobs > 8 )); then
 fi
 if [[ $(git -C "${recoil_source}" rev-parse HEAD) != "${expected_recoil_commit}" \
    || $(git -C "${recoil_source}" rev-parse HEAD^{tree}) != "${expected_recoil_tree}" ]]; then
-  echo "Recoil source is not the admitted stock 2639 commit/tree" >&2
+  echo "Recoil source is not the admitted stock 2026.07.04 commit/tree" >&2
   exit 1
 fi
 if [[ -n $(git -C "${recoil_source}" status --porcelain --untracked-files=no --ignore-submodules=all) ]]; then

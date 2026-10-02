@@ -186,7 +186,7 @@ endif ()
 set(CMAKE_CXX_STANDARD 20)
 
 option(HIGHBAR_STOCK_RECOIL
-	"Build the stock Recoil 2025.06.19 tactical profile without appended callbacks" OFF)
+	"Build the stock Recoil 2026.07.04 tactical profile without appended callbacks" OFF)
 if (HIGHBAR_STOCK_RECOIL AND HIGHBAR_FACTORY_REPLACEMENT_V1)
 	message(FATAL_ERROR
 		"HIGHBAR_STOCK_RECOIL cannot be combined with the custom factory replacement extension")
@@ -342,9 +342,9 @@ if    (BUILD_Cpp_AIWRAPPER)
 	string(REGEX MATCH "sha256[ \t]*=[ \t]*\"([^\"]+)\"" _ "${_highbar_pin_content}")
 	set(HIGHBAR_ENGINE_SHA256 "${CMAKE_MATCH_1}")
 	if (HIGHBAR_STOCK_RECOIL)
-		set(HIGHBAR_ENGINE_RELEASE_ID "2025.06.19")
+		set(HIGHBAR_ENGINE_RELEASE_ID "2026.07.04")
 		set(HIGHBAR_ENGINE_SHA256
-			"e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833")
+			"651d6dca67ad99fde1a593d57eede0dfee167e200558988f154ad2bac1cfce21")
 	endif ()
 	if (NOT HIGHBAR_ENGINE_RELEASE_ID OR NOT HIGHBAR_ENGINE_SHA256)
 		message(FATAL_ERROR

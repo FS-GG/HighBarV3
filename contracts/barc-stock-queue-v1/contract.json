@@ -3,9 +3,9 @@
   "owner": "FS-GG/HighBarV3",
   "consumer": "FS-GG/FSBarV2",
   "stockEngine": {
-    "sourceCommit": "2639eedac7d1fd67d793ec93ebd27f014f336a14",
-    "headlessSha256": "e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833",
-    "release": "2025.06.19"
+    "sourceCommit": "de69361239d8c8b1012dba3f5aa3122954ea4da3",
+    "headlessSha256": "651d6dca67ad99fde1a593d57eede0dfee167e200558988f154ad2bac1cfce21",
+    "release": "2026.07.04"
   },
   "profiles": {
     "legacy": {

@@ -221,14 +221,14 @@ bool SupportsStockRecoilProfile(const char* major, const char* minor,
 		&& additional != nullptr
 		&& normal != nullptr && sync != nullptr && full != nullptr
 		&& is_release
-		&& std::strcmp(major, "2025") == 0
-		&& std::strcmp(minor, "06") == 0
-		&& std::strcmp(patchset, "19") == 0
+		&& std::strcmp(major, "2026") == 0
+		&& std::strcmp(minor, "07") == 0
+		&& std::strcmp(patchset, "04") == 0
 		&& commits[0] == '\0' && hash[0] == '\0' && branch[0] == '\0'
 		&& std::strcmp(additional, "Headless") == 0
-		&& std::strcmp(normal, "2025.06.19") == 0
-		&& std::strcmp(sync, "2025.06.19") == 0
-		&& std::strcmp(full, "2025.06.19 (Headless)") == 0;
+		&& std::strcmp(normal, "2026.07.04") == 0
+		&& std::strcmp(sync, "2026.07.04") == 0
+		&& std::strcmp(full, "2026.07.04 (Headless)") == 0;
 }
 
 std::optional<std::uint32_t> NativeBuildDefinitionId(

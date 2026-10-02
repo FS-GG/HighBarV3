@@ -128,20 +128,22 @@ TEST(TacticalNativeState, StockProfileRequiresClosedReleaseTuple) {
 		return SupportsStockRecoilProfile(major, minor, patchset, "", hash, branch,
 			additional, normal, sync, full, is_release);
 	};
-	EXPECT_TRUE(supports("2025", "06", "19", "", "", "Headless",
+	EXPECT_TRUE(supports("2026", "07", "04", "", "", "Headless",
+		"2026.07.04", "2026.07.04", "2026.07.04 (Headless)"));
+	EXPECT_FALSE(supports("2025", "06", "19", "", "", "Headless",
 		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
 	EXPECT_FALSE(supports("2025", "06", "20", "", "", "Headless",
 		"2025.06.20", "2025.06.20", "2025.06.20 (Headless)"));
-	EXPECT_FALSE(supports("2025", "06", "19", "", "", "",
-		"2025.06.19", "2025.06.19", "2025.06.19"));
-	EXPECT_FALSE(supports("2025", "06", "19", "", "", "Headless Debug",
-		"2025.06.19", "2025.06.19", "2025.06.19 (Headless Debug)"));
-	EXPECT_FALSE(supports("2025", "06", "19", "custom", "", "Headless",
-		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
-	EXPECT_FALSE(supports("2025", "06", "19", "", "", "Headless",
-		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)", false));
-	EXPECT_FALSE(supports(nullptr, "06", "19", "", "", "Headless",
-		"2025.06.19", "2025.06.19", "2025.06.19 (Headless)"));
+	EXPECT_FALSE(supports("2026", "07", "04", "", "", "",
+		"2026.07.04", "2026.07.04", "2026.07.04"));
+	EXPECT_FALSE(supports("2026", "07", "04", "", "", "Headless Debug",
+		"2026.07.04", "2026.07.04", "2026.07.04 (Headless Debug)"));
+	EXPECT_FALSE(supports("2026", "07", "04", "custom", "", "Headless",
+		"2026.07.04", "2026.07.04", "2026.07.04 (Headless)"));
+	EXPECT_FALSE(supports("2026", "07", "04", "", "", "Headless",
+		"2026.07.04", "2026.07.04", "2026.07.04 (Headless)", false));
+	EXPECT_FALSE(supports(nullptr, "07", "04", "", "", "Headless",
+		"2026.07.04", "2026.07.04", "2026.07.04 (Headless)"));
 }
 
 TEST(TacticalNativeState, BuildDefinitionProjectionCoversSignedMinimum) {

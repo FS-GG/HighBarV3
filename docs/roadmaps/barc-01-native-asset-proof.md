@@ -1,5 +1,31 @@
 # BARC-01 native asset and correlated result proof
 
+## Selected current stock engine — 2026-10-02
+
+The next product candidate uses the official Recoil **2026.07.04** release,
+source `de69361239d8c8b1012dba3f5aa3122954ea4da3`, tree
+`081bfe95b4e76e3212afa5805ab5a82e474c0b47`. Downloaded amd64 Linux archive
+SHA-256 is `9824c2c38124e4b90a9b5f7c4e7200c3ea6503c0bd4bff0e0ff46212ec29dcab`,
+matching GitHub's published asset digest. Extracted headless SHA-256 is
+`651d6dca67ad99fde1a593d57eede0dfee167e200558988f154ad2bac1cfce21`;
+actual version readback is `spring-headless version 2026.07.04 (Headless)`.
+
+The selected stock build pin, generated engine identity, closed release-tuple
+admission, trace admission and producer/consumer contract agree on this release.
+The Lua observer's exact source check follows the new source; wire revision,
+queue behavior and historical algorithm vectors are unchanged. The older
+profile's release tuple is refused by the new stock admission.
+
+The official engine remains unmodified. Its
+[upstream headless atlas guard](https://github.com/beyond-all-reason/RecoilEngine/blob/de69361239d8c8b1012dba3f5aa3122954ea4da3/rts/Rendering/Textures/TextureRenderAtlas.cpp#L389)
+is a source-grounded repair candidate, with local startup effect still unproved.
+Existing runtime/evidence directories were preserved; the new engine is acquired
+in a separate candidate installation. Plugin build checks are recorded with the
+owning PR. Count1 and all six useful-play journeys remain unaccepted.
+
+The remaining sections retain the historical 2025.06.19 asset proof and its
+attempt-scoped identities. They do not describe the new candidate's acceptance.
+
 This records a reproducible local asset set and the limit of native evidence as
 of 2026-09-28. It proves one live MoveUnit engine effect but does not qualify
 the full BARC-01.2 command/result contract.

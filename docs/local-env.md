@@ -2,7 +2,7 @@
 
 ## Spring Headless
 
-- `SPRING_HEADLESS=/home/developer/.local/state/Beyond All Reason/engine/recoil_2025.06.19/spring-headless`
+- `SPRING_HEADLESS=/home/developer/.local/state/Beyond All Reason/engine/recoil_2026.07.04/spring-headless`
 - Persisted for login shells in `/home/developer/.bash_profile`
 
 ## BAR Graphical Client
