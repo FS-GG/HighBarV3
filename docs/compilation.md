@@ -49,13 +49,13 @@ setting up a new machine. The practical requirements are:
 The currently pinned runtime is:
 
 ```text
-recoil_2025.06.19
+recoil_2026.07.04
 ```
 
 The reference engine binary path used by the test harness is:
 
 ```text
-$HOME/.local/state/Beyond All Reason/engine/recoil_2025.06.19/spring-headless
+$HOME/.local/state/Beyond All Reason/engine/recoil_2026.07.04/spring-headless
 ```
 
 ## Source Layout
@@ -184,7 +184,7 @@ make test
 The runtime install directory is:
 
 ```text
-$BAR_DATA/engine/recoil_2025.06.19/AI/Skirmish/highBar/stable/
+$BAR_DATA/engine/recoil_2026.07.04/AI/Skirmish/highBar/stable/
 ```
 
 On the reference Linux setup, `$BAR_DATA` is:
@@ -207,7 +207,7 @@ Example:
 
 ```bash
 BAR_DATA="$HOME/.local/state/Beyond All Reason"
-ENGINE_RELEASE="recoil_2025.06.19"
+ENGINE_RELEASE="recoil_2026.07.04"
 HIGHBAR_DIR="$BAR_DATA/engine/$ENGINE_RELEASE/AI/Skirmish/highBar/stable"
 
 mkdir -p "$HIGHBAR_DIR/config" "$HIGHBAR_DIR/script"

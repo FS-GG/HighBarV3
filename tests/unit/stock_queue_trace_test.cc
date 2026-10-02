@@ -56,7 +56,7 @@ StockQueueTraceRecord Record(bool final_read = false) {
 	value.context.profile = kStockTacticalProfile; value.context.revision = kStockTacticalRevision;
 	value.context.evidence_scheme = QueueEvidenceScheme::StockLuaSupportedFieldsV1;
 	value.context.catalogue_id = std::string(16, 'c'); value.context.catalogue_revision = 8;
-	value.context.engine_version = "2025.06.19"; value.context.game_name = "BAR";
+	value.context.engine_version = "2026.07.04"; value.context.game_name = "BAR";
 	value.context.game_version = "test"; value.context.game_content_sha256 = std::string(32, 'h');
 	value.context.actor_id = 0; value.context.actor_lifetime = 7; value.context.domain = "production";
 	value.read.status = StockQueueReadStatus::Complete; value.read.domain = StockQueueDomain::Production;
@@ -96,6 +96,16 @@ TEST(StockQueueTrace, WritesClosedSampleAndFinalIdentityWithSignedZeroBits) {
 	EXPECT_NE(bytes.find("\"sequence\":\"2\",\"phase\":\"final-read\""), std::string::npos);
 	EXPECT_NE(bytes.find("\"brokerSessionId\":\"c3Nzc3Nzc3Nzc3Nzc3Nzcw==\""), std::string::npos);
 	::close(fd); ::unlink(path);
+}
+
+TEST(StockQueueTrace, RefusesHistoricalEngineIdentity) {
+	char path[] = "/tmp/highbar-stock-engine-test-XXXXXX";
+	const int fd = ::mkstemp(path); ASSERT_GE(fd, 0);
+	auto sink = StockQueueTraceSink::CreateForTest(fd, "run"); ASSERT_TRUE(sink);
+	auto record = Record(); record.context.engine_version = "2025.06.19";
+	record.computed_revision = ComputeStockQueueRevision(record.context, record.read.entries);
+	EXPECT_FALSE(sink->Record(record)); EXPECT_EQ(sink->records_written(), 0u);
+	sink.reset(); ::unlink(path);
 }
 
 TEST(StockQueueTrace, PartialWritesCompleteButZeroWriteLatchesFailure) {

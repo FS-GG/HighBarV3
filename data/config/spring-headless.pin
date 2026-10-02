@@ -1,5 +1,5 @@
 [engine]
-release_id = "recoil_2025.06.19"
-sha256 = "e4f63c1a391f9ddfbb4d1da225d9533b1d56c65133687d036422a7380c84e833"
-acquisition_url = "https://github.com/beyond-all-reason/RecoilEngine/releases/download/2025.06.19/recoil_2025.06.19_amd64-linux.7z"
-install_path_relative = "Beyond All Reason/engine/recoil_2025.06.19"
+release_id = "recoil_2026.07.04"
+sha256 = "651d6dca67ad99fde1a593d57eede0dfee167e200558988f154ad2bac1cfce21"
+acquisition_url = "https://github.com/beyond-all-reason/RecoilEngine/releases/download/2026.07.04/recoil_2026.07.04_amd64-linux.7z"
+install_path_relative = "Beyond All Reason/engine/recoil_2026.07.04"

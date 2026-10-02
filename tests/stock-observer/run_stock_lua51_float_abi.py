@@ -10,7 +10,7 @@ import pathlib
 import subprocess
 import tempfile
 
-EXPECTED_RECOIL = "2639eedac7d1fd67d793ec93ebd27f014f336a14"
+EXPECTED_RECOIL = "de69361239d8c8b1012dba3f5aa3122954ea4da3"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
