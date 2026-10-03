@@ -1329,6 +1329,9 @@ void CGrpcGatewayModule::OnUnitDamagedFull(CCircuitUnit* unit,
 		SetVec3(ev->mutable_direction(), dir);
 		ev->set_weapon_def_id(weaponDefId);
 		ev->set_is_paralyzer(paralyzer);
+		// Damage is not resulting health (repair, regeneration and paralysis can
+		// intervene). Read current engine facts in the coalesced end-frame snapshot.
+		state_update_order_.RequestFullStateReplacement();
 	});
 }
 
@@ -1624,7 +1627,7 @@ void CGrpcGatewayModule::FlushDelta(bool project_complete_world_state) {
 
 		// Client-mode consumers require complete world facts at damage and
 		// destroy boundaries. Preserve the exact legacy delta in ring/DeltaBus,
-		// but remove only those two sparse arms from the coordinator projection;
+		// but remove only handled sparse arms from the coordinator projection;
 		// the complete replacement snapshot follows at seq+1.
 		if (coordinator_client_) {
 			if (project_complete_world_state) {
@@ -1690,44 +1693,48 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 	try {
 		const std::uint64_t t0 = NowMicros();
 
-		::highbar::v1::StateUpdate update;
-		update.set_seq(++seq_);
-		update.set_frame(FrameForWire(circuit));
+		grpc::LiveControlState::Clock::time_point snapshot_emitted_at;
+		grpc::PublishSnapshotBeforeBasis([&]() {
+			::highbar::v1::StateUpdate update;
+			update.set_seq(++seq_);
+			update.set_frame(FrameForWire(circuit));
 
-		// Build the snapshot. BuildIncremental omits StaticMap — it was
-		// already delivered in HelloResponse and on any StreamState
-		// resume-from-empty path; per-tick resends would be wasted bytes.
-		auto* snap = update.mutable_snapshot();
-		*snap = snapshot_->BuildIncremental();
-		snap->set_effective_cadence_frames(effective_cadence_frames);
-		snap->set_frame_number(FrameForWire(circuit));
+			// Build the snapshot. BuildIncremental omits StaticMap — it was
+			// already delivered in HelloResponse and on any StreamState
+			// resume-from-empty path; per-tick resends would be wasted bytes.
+			auto* snap = update.mutable_snapshot();
+			*snap = snapshot_->BuildIncremental();
+			snap->set_effective_cadence_frames(effective_cadence_frames);
+			snap->set_frame_number(FrameForWire(circuit));
 
-		// Constitution V: stamp CLOCK_MONOTONIC_ns at the moment we hand
-		// the frame to the fan-out. Same pattern as CoordinatorClient.
-		const auto snapshot_emitted_at = grpc::LiveControlState::Clock::now();
-		{
-			struct timespec ts;
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			update.set_send_monotonic_ns(
-				static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ULL
-				+ static_cast<std::uint64_t>(ts.tv_nsec));
-		}
+			// Constitution V: stamp CLOCK_MONOTONIC_ns at the moment we hand
+			// the frame to the fan-out. Same pattern as CoordinatorClient.
+			snapshot_emitted_at = grpc::LiveControlState::Clock::now();
+			{
+				struct timespec ts;
+				clock_gettime(CLOCK_MONOTONIC, &ts);
+				update.set_send_monotonic_ns(
+					static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ULL
+					+ static_cast<std::uint64_t>(ts.tv_nsec));
+			}
 
-		auto payload = std::make_shared<std::string>();
-		if (!update.SerializeToString(payload.get())) {
-			throw std::runtime_error("SerializeToString failed");
-		}
-		auto frozen = std::const_pointer_cast<const std::string>(payload);
+			auto payload = std::make_shared<std::string>();
+			if (!update.SerializeToString(payload.get())) {
+				throw std::runtime_error("SerializeToString failed");
+			}
+			auto frozen = std::const_pointer_cast<const std::string>(payload);
 
-		{
-			std::unique_lock<std::shared_mutex> lock(state_mutex_);
-			ring_->Push(seq_, frozen);
-		}
-		delta_bus_->Publish(frozen);
+			{
+				std::unique_lock<std::shared_mutex> lock(state_mutex_);
+				ring_->Push(seq_, frozen);
+			}
+			delta_bus_->Publish(frozen);
 
-		if (coordinator_client_) {
-			const bool enqueued = coordinator_client_->PushStateUpdate(update);
-			if (enqueued && live_control_state_) {
+			return update;
+		}, [&](const ::highbar::v1::StateUpdate& update) {
+			return coordinator_client_ && coordinator_client_->PushStateUpdate(update);
+		}, [&](const ::highbar::v1::StateUpdate& update) {
+			if (live_control_state_) {
 				auto units = live_control_state_->SnapshotUnitMetadata();
 				if (units) {
 					::highbar::v1::LiveSnapshotMetadata metadata;
@@ -1741,7 +1748,7 @@ void CGrpcGatewayModule::BroadcastSnapshot(std::uint32_t effective_cadence_frame
 					BuildAndReportTacticalSnapshot(basis);
 				}
 			}
-		}
+		});
 
 		if (counters_ != nullptr) {
 			counters_->RecordFrameFlushUs(NowMicros() - t0);

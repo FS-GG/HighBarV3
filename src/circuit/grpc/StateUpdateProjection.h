@@ -34,7 +34,18 @@ private:
 	bool replacement_pending_ = false;
 };
 
-// Copies the source identity and every delta arm except the two sparse enemy
+// The builder may throw (including serialization failure). A failed build or
+// enqueue never grants a new basis; record receives the exact enqueued update.
+// Callers retain their existing exception/disabled-state boundary.
+template <typename Build, typename Enqueue, typename Record>
+bool PublishSnapshotBeforeBasis(Build build, Enqueue enqueue, Record record) {
+	auto update = build();
+	if (!enqueue(update)) return false;
+	record(update);
+	return true;
+}
+
+// Copies the source identity and every delta arm except the handled sparse damage/destroy
 // events whose wire shape cannot update current health/presence truthfully.
 // Returns false when no coordinator delta remains; the following complete
 // snapshot is then the coordinator's recovery baseline across the skipped seq.
@@ -47,7 +58,8 @@ inline bool BuildCoordinatorDeltaProjection(
 	projection->set_frame(source.frame());
 	projection->set_send_monotonic_ns(source.send_monotonic_ns());
 	for (const auto& event : source.delta().events()) {
-		if (event.kind_case() == ::highbar::v1::DeltaEvent::kEnemyDamaged
+		if (event.kind_case() == ::highbar::v1::DeltaEvent::kUnitDamaged
+		    || event.kind_case() == ::highbar::v1::DeltaEvent::kEnemyDamaged
 		    || event.kind_case() == ::highbar::v1::DeltaEvent::kEnemyDestroyed) {
 			continue;
 		}
