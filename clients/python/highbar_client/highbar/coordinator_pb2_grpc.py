@@ -7,7 +7,7 @@ from highbar import commands_pb2 as highbar_dot_commands__pb2
 from highbar import coordinator_pb2 as highbar_dot_coordinator__pb2
 from highbar import state_pb2 as highbar_dot_state__pb2
 
-GRPC_GENERATED_VERSION = '1.73.1'
+GRPC_GENERATED_VERSION = '1.85.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -20,14 +20,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in highbar/coordinator_pb2_grpc.py depends on'
+        + ' but the generated code in highbar/coordinator_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class HighBarCoordinatorStub(object):
+class HighBarCoordinatorStub:
     """The coordinator exposes this service. The plugin dials out to it
     from within spring-headless. Multiple observers/AI clients attach to
     the coordinator, which fans out per match.
@@ -54,9 +54,14 @@ class HighBarCoordinatorStub(object):
                 request_serializer=highbar_dot_coordinator__pb2.CommandChannelSubscribe.SerializeToString,
                 response_deserializer=highbar_dot_commands__pb2.CommandBatch.FromString,
                 _registered_method=True)
+        self.ReportCommandBatchResult = channel.unary_unary(
+                '/highbar.v1.HighBarCoordinator/ReportCommandBatchResult',
+                request_serializer=highbar_dot_coordinator__pb2.CommandBatchResultReport.SerializeToString,
+                response_deserializer=highbar_dot_coordinator__pb2.CommandBatchResultReportAck.FromString,
+                _registered_method=True)
 
 
-class HighBarCoordinatorServicer(object):
+class HighBarCoordinatorServicer:
     """The coordinator exposes this service. The plugin dials out to it
     from within spring-headless. Multiple observers/AI clients attach to
     the coordinator, which fans out per match.
@@ -95,6 +100,16 @@ class HighBarCoordinatorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReportCommandBatchResult(self, request, context):
+        """Plugin -> coordinator native admission result. The command-reader
+        background thread calls this only after AdmitCommandBatch has made the
+        atomic queue decision. Reports are idempotent for the exact owning
+        channel incarnation and command identity.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_HighBarCoordinatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -113,6 +128,11 @@ def add_HighBarCoordinatorServicer_to_server(servicer, server):
                     request_deserializer=highbar_dot_coordinator__pb2.CommandChannelSubscribe.FromString,
                     response_serializer=highbar_dot_commands__pb2.CommandBatch.SerializeToString,
             ),
+            'ReportCommandBatchResult': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportCommandBatchResult,
+                    request_deserializer=highbar_dot_coordinator__pb2.CommandBatchResultReport.FromString,
+                    response_serializer=highbar_dot_coordinator__pb2.CommandBatchResultReportAck.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'highbar.v1.HighBarCoordinator', rpc_method_handlers)
@@ -121,7 +141,7 @@ def add_HighBarCoordinatorServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class HighBarCoordinator(object):
+class HighBarCoordinator:
     """The coordinator exposes this service. The plugin dials out to it
     from within spring-headless. Multiple observers/AI clients attach to
     the coordinator, which fans out per match.
@@ -198,6 +218,33 @@ class HighBarCoordinator(object):
             '/highbar.v1.HighBarCoordinator/OpenCommandChannel',
             highbar_dot_coordinator__pb2.CommandChannelSubscribe.SerializeToString,
             highbar_dot_commands__pb2.CommandBatch.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportCommandBatchResult(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/highbar.v1.HighBarCoordinator/ReportCommandBatchResult',
+            highbar_dot_coordinator__pb2.CommandBatchResultReport.SerializeToString,
+            highbar_dot_coordinator__pb2.CommandBatchResultReportAck.FromString,
             options,
             channel_credentials,
             insecure,

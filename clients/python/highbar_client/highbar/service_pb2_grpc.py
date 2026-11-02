@@ -8,7 +8,7 @@ from highbar import commands_pb2 as highbar_dot_commands__pb2
 from highbar import service_pb2 as highbar_dot_service__pb2
 from highbar import state_pb2 as highbar_dot_state__pb2
 
-GRPC_GENERATED_VERSION = '1.73.1'
+GRPC_GENERATED_VERSION = '1.85.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -21,14 +21,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in highbar/service_pb2_grpc.py depends on'
+        + ' but the generated code in highbar/service_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class HighBarProxyStub(object):
+class HighBarProxyStub:
     """---------------------------------------------------------------------------
     Service
     ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ class HighBarProxyStub(object):
                 _registered_method=True)
 
 
-class HighBarProxyServicer(object):
+class HighBarProxyServicer:
     """---------------------------------------------------------------------------
     Service
     ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ def add_HighBarProxyServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class HighBarProxy(object):
+class HighBarProxy:
     """---------------------------------------------------------------------------
     Service
     ---------------------------------------------------------------------------
@@ -610,7 +610,7 @@ class HighBarProxy(object):
             _registered_method=True)
 
 
-class HighBarAdminStub(object):
+class HighBarAdminStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -636,7 +636,7 @@ class HighBarAdminStub(object):
                 _registered_method=True)
 
 
-class HighBarAdminServicer(object):
+class HighBarAdminServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetAdminCapabilities(self, request, context):
@@ -683,7 +683,7 @@ def add_HighBarAdminServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class HighBarAdmin(object):
+class HighBarAdmin:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

@@ -2,11 +2,9 @@
 #
 # HighBarV3 — Python client package (T084).
 #
-# Targets Python 3.11+. gRPC stubs are regenerated from proto/highbar/
-# via grpcio-tools at build time — there is no committed generated
-# code under highbar_client/highbar_v1_pb2* (those appear in the
-# build/ tree after `buf generate` or the inline grpc_tools call in
-# __init__.py's dev-install path).
+# Targets Python 3.11+. Generated gRPC/protobuf stubs are committed under
+# highbar_client/highbar/; regenerate them with `make codegen` after
+# installing the dev extra. Keep runtime floors aligned with their generator.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -23,19 +21,14 @@ authors = [
     { name = "HighBarV3 contributors" }
 ]
 dependencies = [
-    "grpcio >= 1.62",
-    # 003-snapshot-arm-coverage T028 — grpcio-tools 1.71 emits gencode
-    # 6.x which requires protobuf runtime >= 6.x. Pin to the 6.x line
-    # (still compatible with pre-003 stubs that used older gencode).
-    "protobuf >= 6.0, < 7",
+    "grpcio >= 1.85.1",
+    # grpcio-tools 1.85.1 emits protobuf 7.35.1 code.
+    "protobuf >= 7.35.1, < 8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    # 003-snapshot-arm-coverage T028 — pinned to the 1.72..1.73 window
-    # whose bundled libprotoc emits gencode 6.x compatible with the
-    # protobuf 6.x runtime our project depends on.
-    "grpcio-tools >= 1.72.1, < 1.74",
+    "grpcio-tools == 1.85.1",
     "pytest >= 8.0",
     "pytest-asyncio >= 0.23",
 ]
