@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Organization closing-keyword lint from the maintained hub; no receiver rule copy.
+# Refs FS-GG/.github#5195. No secret, candidate checkout or protection change.
+name: closing-keywords
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: closing-keywords-${{ contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action) && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  closing-keywords:
+    uses: FS-GG/.github/.github/workflows/closing-keywords-receiver.yml@main
