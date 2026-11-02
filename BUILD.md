@@ -22,7 +22,7 @@ sidesteps it. The reference scripts live at
 - `spring-headless` installed at
   `~/.local/state/Beyond All Reason/engine/recoil_2025.06.19/spring-headless`
   (matches `data/config/spring-headless.pin`).
-- `~/vcpkg` cloned at baseline `256acc64012b23a13041d8705805e1f23b43a024`,
+- `~/vcpkg` cloned at baseline `80aae04504a834399456d74605204bfe514762bf`,
   bootstrapped (`./bootstrap-vcpkg.sh -disableMetrics`).
 - The BAR Recoil engine source cloned at
   `~/recoil-engine` (tag `2025.06.19`, with submodules
