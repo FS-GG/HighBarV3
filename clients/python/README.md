@@ -28,7 +28,10 @@ targets:
 The generated files **are committed** under
 `highbar_client/highbar/` (per T036) so users do not need a
 `grpcio-tools` install just to import the package; only contributors
-who change `.proto` files need to run `make codegen`.
+who change `.proto` files or the generator need to run `make codegen`.
+The generator is pinned so committed stubs reproduce exactly. Runtime minimums
+match its generated guards; see [client dependency qualification](../../docs/client-dependencies.md).
+For the resolved development environment, use `uv sync --locked --extra dev`.
 
 ## Live-gateway environment
 

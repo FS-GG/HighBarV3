@@ -76,8 +76,10 @@ jobs:
         working-directory: clients/python
         run: |
           python -m pip install --upgrade pip
-          python -m pip install grpcio grpcio-tools pytest
+          python -m pip install -e ".[dev]"
+          python -m pip check
           make codegen
+          git diff --exit-code -- highbar_client/highbar
           make test
 
   bash-syntax:
