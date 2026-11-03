@@ -53,8 +53,8 @@ cd "$runner_dir"
 
 if [ ! -x ./config.sh ]; then
     # Pin an explicit runner version so registrations are reproducible.
-    RUNNER_VERSION=2.320.0
-    RUNNER_SHA=93ac1b7ce743ee85b5d386f5c1787385ef07b3d7c728ff66ce0d3813d5f46900
+    RUNNER_VERSION=2.338.2
+    RUNNER_SHA=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
     tarball="actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
     echo "register-runner: fetching actions-runner ${RUNNER_VERSION}"
     curl -fL --retry 3 -o "$tarball" \
