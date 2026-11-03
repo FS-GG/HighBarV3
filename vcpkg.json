@@ -10,5 +10,13 @@
     "protobuf",
     "abseil"
   ],
-  "builtin-baseline": "80aae04504a834399456d74605204bfe514762bf"
+  "builtin-baseline": "80aae04504a834399456d74605204bfe514762bf",
+  "features": {
+    "tests": {
+      "description": "Build standalone native unit tests",
+      "dependencies": [
+        "gtest"
+      ]
+    }
+  }
 }
