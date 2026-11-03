@@ -1,0 +1,11 @@
+--- a/configdata.pm.in
++++ b/configdata.pm.in
+@@ -218,6 +218,8 @@
+         $create_configuration->($configuration_h, $configuration_h_in);
+         $update_configuration->($configuration_h, $configuration_h_in);
+ 
++        require File::Path;
++        File::Path::make_path(dirname($apps_configuration_h));
+         $create_configuration->($apps_configuration_h, $apps_configuration_h_in);
+         $update_configuration->($apps_configuration_h, $apps_configuration_h_in);
+ 

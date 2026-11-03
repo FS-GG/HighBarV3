@@ -1,0 +1,26 @@
+--- a/Configurations/windows-makefile.tmpl
++++ b/Configurations/windows-makefile.tmpl
+@@ -562,6 +562,7 @@
+ 	@if not "$(INSTALL_MODULES)"=="" \
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_MODULES) "$(MODULESDIR)"
+ 	@if not "$(INSTALL_MODULES)"=="" \
++	 @if "$(INSTALL_PDBS)"=="ON" \
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_MODULEPDBS) "$(MODULESDIR)"
+ 
+ uninstall_modules:
+@@ -575,6 +576,7 @@
+ 	@if not "$(SHLIBS)"=="" \
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_SHLIBS) "$(INSTALLTOP)\bin"
+ 	@if not "$(SHLIBS)"=="" \
++	 @if "$(INSTALL_PDBS)"=="ON" \
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_SHLIBPDBS) \
+                                         "$(INSTALLTOP)\bin"
+ 
+@@ -587,6 +589,7 @@
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_PROGRAMS) \
+                                         "$(INSTALLTOP)\bin"
+ 	@if not "$(INSTALL_PROGRAMPDBS)"=="" \
++	 @if "$(INSTALL_PDBS)"=="ON" \
+ 	 "$(PERL)" "$(SRCDIR)\util\copy.pl" $(INSTALL_PROGRAMPDBS) \
+                                         "$(INSTALLTOP)\bin"
+ 	@if not "$(BIN_SCRIPTS)"=="" \

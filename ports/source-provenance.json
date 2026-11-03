@@ -1,0 +1,31 @@
+{
+  "baseline": "80aae04504a834399456d74605204bfe514762bf",
+  "grpc": {
+    "version": "1.85.1",
+    "sha512": "92d603edf330fc8c421d8f6feaca3dafdb71bb70775ce45292bb62368d433d45012a89a854e681376a6cf1c46e036b857b0be157af989dc09260a7715e84c0b3",
+    "grpcProto": "dd549fc4ed04b60b0fdd3866b82ef0a7c87c6e4f",
+    "grpcProtoSha512": "0ef851d29d6a39e2dee16c7b5b6ae12bbac0199a45be82cdb73105684fb9543f61ca439bf52cc7982c98ff186d85a53e4814bce08236735f97e4c6c9610d9bda",
+    "patches": "all7 currentvcpkg patches apply inmaintainedorder/flags"
+  },
+  "abseil": {
+    "version": "20260817.0",
+    "sha512": "27e2db9269aff1c114c3fd26e501fcc186678102326f580a81c4c04392175523eb13967ffa36a43acfdf92498377d80d849558cf0c341fae1f83e677ab87a08e",
+    "removedPatches": "TESTONLY and WIN32 DLL cases already present upstream",
+    "retainedPatches": [
+      "003-force-cxx-17.patch",
+      "fix-gcc13-constexpr-function-pointer.patch"
+    ]
+  },
+  "qualified": "source acquisition and patch application only; no library compilation",
+  "purpose": "Temporary maintained overlays until the upstream vcpkg registry supports these stable releases; build/runtime qualification required before acceptance.",
+  "upstreamPortSource": "https://github.com/microsoft/vcpkg/tree/80aae04504a834399456d74605204bfe514762bf/ports",
+  "license": "LICENSE.vcpkg.txt",
+  "openssl": {
+    "version": "4.1.0",
+    "url": "https://codeload.github.com/openssl/openssl/tar.gz/refs/tags/openssl-4.1.0",
+    "bytes": 55917193,
+    "sha512": "05160a10cdd6ad769a579b7e671d061d2763256cef281fb6e7d4fea03f3a20136657e86eb19934e3fa11f9b28a22712f43516fe81f90da31fe00b18e357ce942",
+    "migration": "Upstream removed engines, SSL3 and c_rehash. Retain module/PDB/install semantics with adapted patches. Add output-directory creation for no-apps out-of-tree configuration; original Configure failed before apps/include existed.",
+    "qualification": "All nine inherited/adapted patches apply; out-of-tree no-apps Configure passes after scoped output-directory patch. Full port compilation pending."
+  }
+}
